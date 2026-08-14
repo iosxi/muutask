@@ -136,6 +136,24 @@ def raise_to_top(hwnd: int) -> None:
     user32.SetWindowPos(hwnd, wintypes.HWND(HWND_TOP), 0, 0, 0, 0, flags)
 
 
+def window_band(hwnd: int) -> Optional[int]:
+    """ウィンドウの z バンド。取れなければ None。
+
+    GetWindowBand は文書化されていないが Windows 8 以降の user32 にある。
+    タスクバーは通常こちらと同じ 1 (ZBID_DEFAULT) だが、スタート メニューを
+    開くと 6 (ZBID_IMMERSIVE_EDGY) へ上がり、**別のウィンドウが活性化される
+    まで下りてこない**。上のバンドへは SetWindowPos では入れず、SetWindowBand は
+    UIAccess 権限が無いと ERROR_ACCESS_DENIED (5) で弾かれる (実測)。
+    """
+    try:
+        value = wintypes.DWORD()
+        if user32.GetWindowBand(wintypes.HWND(hwnd), ctypes.byref(value)):
+            return value.value
+    except (AttributeError, OSError):
+        pass
+    return None
+
+
 def foreground_is_fullscreen() -> bool:
     """全画面のアプリ (ゲームや動画) が前面にあるか。"""
     hwnd = user32.GetForegroundWindow()

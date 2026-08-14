@@ -10,7 +10,7 @@ from pystray import Menu, MenuItem
 
 import icons
 from media_session import NowPlaying
-from taskbar_bar import BAR_ANCHORS
+from taskbar_bar import BAR_ANCHORS, BAR_WIDTHS
 from theme import Palette
 
 ICON_SIZE = 64
@@ -23,13 +23,12 @@ class Tray:
     def __init__(
         self,
         state_provider: Callable[[], NowPlaying],
-        on_toggle_panel: Callable[[], None],
         on_play_pause: Callable[[], None],
         on_next: Callable[[], None],
         on_prev: Callable[[], None],
-        on_toggle_pin: Callable[[], None],
         on_toggle_hide_when_idle: Callable[[], None],
         on_set_anchor: Callable[[str], None],
+        on_set_width: Callable[[int], None],
         on_select_session: Callable[[Optional[str]], None],
         on_quit: Callable[[], None],
         config,
@@ -37,6 +36,7 @@ class Tray:
         self._state = state_provider
         self._on_select_session = on_select_session
         self._on_set_anchor = on_set_anchor
+        self._on_set_width = on_set_width
         self.config = config
         self.palette = Palette.current()
 
@@ -45,24 +45,18 @@ class Tray:
         self._thread: Optional[threading.Thread] = None
 
         menu = Menu(
-            MenuItem("パネルを開く / 閉じる", lambda: on_toggle_panel(), default=True),
-            Menu.SEPARATOR,
-            MenuItem("再生 / 一時停止", lambda: on_play_pause()),
+            MenuItem("再生 / 一時停止", lambda: on_play_pause(), default=True),
             MenuItem("次の曲", lambda: on_next()),
             MenuItem("前の曲", lambda: on_prev()),
             Menu.SEPARATOR,
             MenuItem("再生元", Menu(self._session_items)),
             MenuItem("表示位置", Menu(self._anchor_items)),
+            MenuItem("バーの幅", Menu(self._width_items)),
             Menu.SEPARATOR,
             MenuItem(
                 "再生中のときだけ表示",
                 lambda: on_toggle_hide_when_idle(),
                 checked=lambda _i: self.config.bar_hide_when_idle,
-            ),
-            MenuItem(
-                "詳細パネルを常に表示",
-                lambda: on_toggle_pin(),
-                checked=lambda _i: self.config.pinned,
             ),
             Menu.SEPARATOR,
             MenuItem("終了", lambda: on_quit()),
@@ -105,6 +99,18 @@ class Tray:
         for value, label in BAR_ANCHORS:
             yield MenuItem(label, select(value), checked=is_selected(value), radio=True)
 
+    def _width_items(self):
+        def select(value: int):
+            return lambda _icon: self._on_set_width(value)
+
+        def is_selected(value: int):
+            return lambda _item: self.config.bar_width == value
+
+        for value, label in BAR_WIDTHS:
+            yield MenuItem(
+                f"{label} ({value})", select(value), checked=is_selected(value), radio=True
+            )
+
     # ------------------------------------------------------------------ 見た目
 
     def _make_image(self, state: NowPlaying):
@@ -128,7 +134,7 @@ class Tray:
 
     def update(self, state: NowPlaying) -> None:
         """再生状態に合わせてアイコンとツールチップを更新する。"""
-        key = f"{state.track_key}|{state.status}"
+        key = f"{state.art_key}|{state.status}"
         if key != self._icon_key:
             self._icon_key = key
             try:
@@ -142,9 +148,9 @@ class Tray:
         menu_key = (
             state.sessions,
             self.config.session,
-            self.config.pinned,
             self.config.bar_hide_when_idle,
             self.config.bar_anchor,
+            self.config.bar_width,
         )
         if menu_key != self._menu_key:
             self._menu_key = menu_key

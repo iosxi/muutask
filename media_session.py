@@ -29,6 +29,11 @@ from winrt.windows.storage.streams import Buffer, InputStreamOptions
 # 100 ナノ秒刻み (WinRT の TimeSpan) → 秒
 TICKS_PER_SECOND = 10_000_000
 
+#: 曲が変わってからアルバム アートを読み直し続ける時間 (秒)
+ART_RETRY_WINDOW = 8.0
+#: その間の読み直し間隔 (秒)。遅れて届くアートを早く拾うため短くする
+ART_POLL = 0.3
+
 # アプリ ID からそれっぽい表示名を作るための対応表
 FRIENDLY_NAMES = {
     "spotify.exe": "Spotify",
@@ -93,6 +98,16 @@ class NowPlaying:
         return self.status == "playing"
 
     @property
+    def art_key(self) -> str:
+        """アルバム アートを描き直すかの判定用。
+
+        曲が同じでも、遅れて届いたアートに差し替わることがあるので、
+        track_key だけでなく画像の中身も見る。
+        """
+        thumb = self.thumbnail
+        return f"{self.track_key}|{len(thumb) if thumb else 0}|{hash(thumb)}"
+
+    @property
     def app_name(self) -> str:
         return friendly_app_name(self.app_id)
 
@@ -131,6 +146,7 @@ class MediaController:
         self._preferred_app: Optional[str] = None  # ユーザーが固定したセッション
         self._track_key = ""
         self._thumbnail: Optional[bytes] = None
+        self._art_deadline = 0.0  # この時刻まではアルバム アートを読み直す
         self._dirty: Optional[asyncio.Event] = None
         self._state = NowPlaying()
 
@@ -255,8 +271,10 @@ class MediaController:
             except OSError:
                 pass
             self._dirty.clear()
+            # アートの読み直し中だけ間隔を詰める (遅れて届く分を早く拾う)
+            wait = ART_POLL if time.monotonic() < self._art_deadline else self.TICK
             try:
-                await asyncio.wait_for(self._dirty.wait(), timeout=self.TICK)
+                await asyncio.wait_for(self._dirty.wait(), timeout=wait)
             except asyncio.TimeoutError:
                 pass
 
@@ -340,6 +358,7 @@ class MediaController:
         if session is None:
             self._track_key = ""
             self._thumbnail = None
+            self._art_deadline = 0.0
             self._publish(NowPlaying(sessions=listing))
             return
 
@@ -371,9 +390,17 @@ class MediaController:
             (session.source_app_user_model_id, title, artist, album)
         )
         if track_key != self._track_key:
-            # 曲が変わったときだけアルバム アートを読み直す
             self._track_key = track_key
             self._thumbnail = await self._read_thumbnail(props)
+            self._art_deadline = time.monotonic() + ART_RETRY_WINDOW
+        elif time.monotonic() < self._art_deadline:
+            # 曲名が変わった時点では、アートがまだ前の曲のまま (あるいは
+            # 途中の別画像) のことがある。実測では 0.5 秒ほど遅れて本来の
+            # 画像に差し替わる。1 回しか読まないと、そのズレたまま固定されて
+            # しまうので、しばらく読み直して新しくなっていれば拾い直す。
+            latest = await self._read_thumbnail(props)
+            if latest is not None and latest != self._thumbnail:
+                self._thumbnail = latest
 
         self._publish(
             NowPlaying(

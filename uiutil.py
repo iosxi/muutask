@@ -1,4 +1,4 @@
-"""パネルとタスクバー バーで共通に使う描画まわりの小道具。"""
+"""タスクバー バーとトレイ アイコンで共通に使う描画まわりの小道具。"""
 
 from __future__ import annotations
 
@@ -14,20 +14,12 @@ MDL2_GLYPHS = {
     "next": "",
     "play": "",
     "pause": "",
-    "pin": "",
-    "unpin": "",
-    "close": "",
-    "more": "",
 }
 PLAIN_GLYPHS = {
     "prev": "⏮",
     "next": "⏭",
     "play": "▶",
     "pause": "⏸",
-    "pin": "◉",
-    "unpin": "○",
-    "close": "✕",
-    "more": "⋯",
 }
 
 
@@ -66,12 +58,6 @@ def elide(text: str, font: tkfont.Font, max_width: int) -> str:
             high = mid - 1
     return text[:low].rstrip() + "…"
 
-
-def format_time(seconds: float) -> str:
-    seconds = max(0, int(seconds))
-    if seconds >= 3600:
-        return f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
-    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 def luminance(color: str) -> float:

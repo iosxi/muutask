@@ -19,8 +19,7 @@ from typing import Callable
 import theme
 from config import Config
 from media_session import MediaController, NowPlaying
-from panel import Panel
-from taskbar_bar import BAR_ANCHORS, TaskbarBar
+from taskbar_bar import BAR_ANCHORS, BAR_WIDTHS, TaskbarBar
 from tray_icon import Tray
 
 MUTEX_NAME = "MuuTask.SingleInstance"
@@ -66,25 +65,22 @@ class App:
         self.root.title("MuuTask")
 
         self.controller = MediaController(self._on_state)
-        self.panel = Panel(self.root, self.controller, self.config)
         self.bar = TaskbarBar(
             self.root,
             self.controller,
             self.config,
             scale=theme.ui_scale(),
-            on_open_panel=self.panel.toggle,
             on_context_menu=self._show_menu,
         )
         self.menu = self._build_menu()
         self.tray = Tray(
             state_provider=lambda: self.state,
-            on_toggle_panel=lambda: self._post(self.panel.toggle),
             on_play_pause=self.controller.toggle_play_pause,
             on_next=self.controller.next_track,
             on_prev=self.controller.previous_track,
-            on_toggle_pin=lambda: self._post(self._toggle_pin),
             on_toggle_hide_when_idle=lambda: self._post(self._toggle_hide_when_idle),
             on_set_anchor=lambda a: self._post(lambda: self._set_anchor(a)),
+            on_set_width=lambda w: self._post(lambda: self._set_width(w)),
             on_select_session=lambda app_id: self._post(
                 lambda: self._select_session(app_id)
             ),
@@ -114,18 +110,14 @@ class App:
         state = self._pending_state
         if state is not None and state is not self.state:
             self.state = state
-            self.panel.update_state(state)
             self.bar.update_state(state)
             self.tray.update(state)
 
         self.root.after(DRAIN_INTERVAL, self._drain)
 
     def _tick(self) -> None:
-        if self.state.is_playing:
-            if self.panel.visible:
-                self.panel.update_progress()
-            if self.bar.visible:
-                self.bar.update_progress()
+        if self.state.is_playing and self.bar.visible:
+            self.bar.update_progress()
         self.root.after(TICK_INTERVAL, self._tick)
 
     def _sync(self) -> None:
@@ -151,7 +143,6 @@ class App:
         menu.add_command(label="次の曲", command=self.controller.next_track)
         menu.add_command(label="前の曲", command=self.controller.previous_track)
         menu.add_separator()
-        menu.add_command(label="詳細パネルを開く", command=self.panel.toggle)
 
         sources = tk.Menu(menu, tearoff=0)
         current = self.config.session
@@ -185,15 +176,22 @@ class App:
             )
         menu.add_cascade(label="表示位置", menu=positions)
 
+        widths = tk.Menu(menu, tearoff=0)
+        width = tk.IntVar(master=self.root, value=self.config.bar_width)
+        self._menu_vars.append(width)
+        for value, label in BAR_WIDTHS:
+            widths.add_radiobutton(
+                label=f"{label} ({value})",
+                value=value,
+                variable=width,
+                command=lambda v=value: self._set_width(v),
+            )
+        menu.add_cascade(label="バーの幅", menu=widths)
+
         menu.add_checkbutton(
             label="再生中のときだけ表示",
             variable=self._var(self.config.bar_hide_when_idle),
             command=self._toggle_hide_when_idle,
-        )
-        menu.add_checkbutton(
-            label="詳細パネルを常に表示",
-            variable=self._var(self.config.pinned),
-            command=self._toggle_pin,
         )
         menu.add_separator()
         menu.add_command(label="終了", command=self.quit)
@@ -214,14 +212,16 @@ class App:
         self.bar.sync()
         self.tray.refresh_menu()
 
-    def _toggle_hide_when_idle(self) -> None:
-        self.config.bar_hide_when_idle = not self.config.bar_hide_when_idle
+    def _set_width(self, width: int) -> None:
+        self.config.bar_width = width
         self.config.save()
         self.bar.sync()
         self.tray.refresh_menu()
 
-    def _toggle_pin(self) -> None:
-        self.panel.set_pinned(not self.config.pinned)
+    def _toggle_hide_when_idle(self) -> None:
+        self.config.bar_hide_when_idle = not self.config.bar_hide_when_idle
+        self.config.save()
+        self.bar.sync()
         self.tray.refresh_menu()
 
     def _select_session(self, app_id) -> None:
@@ -245,8 +245,6 @@ class App:
             self.controller.select_session(self.config.session)
         self.controller.start()
         self.tray.start()
-        if self.config.pinned:
-            self.panel.show()
         self.root.after(DRAIN_INTERVAL, self._drain)
         self.root.after(TICK_INTERVAL, self._tick)
         self.root.after(0, self._sync)

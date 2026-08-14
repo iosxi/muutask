@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 APP_NAME = "MuuTask"
-APP_VERSION = "2"  # v1 から配布のたびに 1 ずつ上げる
+APP_VERSION = "3"  # v1 から配布のたびに 1 ずつ上げる
 
 
 def _config_path() -> Path:
@@ -65,9 +65,6 @@ def _take_over_legacy_config() -> None:
 
 @dataclass
 class Config:
-    pinned: bool = False
-    x: Optional[int] = None
-    y: Optional[int] = None
     session: Optional[str] = None  # 固定するアプリ ID (None = 自動)
 
     # タスクバーに重ねて出すバー

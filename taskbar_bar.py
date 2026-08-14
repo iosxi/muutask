@@ -30,6 +30,13 @@ BAR_ANCHORS = (
     ("start", "スタート ボタンの左"),
     ("tray", "通知領域の左"),
 )
+#: メニューから選べる幅 (96 DPI 基準の px, 表示名)
+BAR_WIDTHS = (
+    (240, "狭い"),
+    (340, "標準"),
+    (460, "広い"),
+    (600, "とても広い"),
+)
 #: これより狭い場所には置かない (96 DPI 基準の px)
 MIN_WIDTH = 120
 
@@ -48,14 +55,12 @@ class TaskbarBar:
         controller,
         config,
         scale: float,
-        on_open_panel: Callable[[], None],
         on_context_menu: Callable[[int, int], None],
     ) -> None:
         self.root = root
         self.controller = controller
         self.config = config
         self.scale = scale
-        self.on_open_panel = on_open_panel
         self.on_context_menu = on_context_menu
 
         self.state = NowPlaying()
@@ -197,7 +202,6 @@ class TaskbarBar:
             "prev": (prev_cx - half, 0, prev_cx + half, height),
             "play": (play_cx - half, 0, play_cx + half, height),
             "next": (next_cx - half, 0, next_cx + half, height),
-            "open": (0, 0, text_right, height),
         }
         self._art_size = art
         self._art_key = None  # 作り直したので再描画させる
@@ -214,12 +218,10 @@ class TaskbarBar:
     # ------------------------------------------------------------------ 入力
 
     def _hit(self, x: int, y: int) -> Optional[str]:
-        for name in ("prev", "play", "next", "open"):
+        for name in ("prev", "play", "next"):
             box = self._hitboxes.get(name)
             if box and box[0] <= x <= box[2] and box[1] <= y <= box[3]:
-                if name != "open" and not self._enabled(name):
-                    return None
-                return name
+                return name if self._enabled(name) else None
         return None
 
     def _enabled(self, name: str) -> bool:
@@ -250,8 +252,6 @@ class TaskbarBar:
             self.controller.next_track()
         elif name == "play":
             self.controller.toggle_play_pause()
-        elif name == "open":
-            self.on_open_panel()
 
     # ------------------------------------------------------------------ 位置合わせ
 
@@ -284,7 +284,9 @@ class TaskbarBar:
 
     def sync(self) -> None:
         """タスクバーの位置・高さに追従し、重なり順を保つ。"""
-        if self.config.bar_hide_when_idle and not self.state.has_media:
+        # ラベルどおり「再生中」だけを見る。has_media だと一時停止中のセッションが
+        # 残っているアプリ (ブラウザーなど) で永久に隠れず、設定が効かなかった。
+        if self.config.bar_hide_when_idle and not self.state.is_playing:
             self._hide()
             return
         rect = winapi.taskbar_rect()
@@ -335,10 +337,11 @@ class TaskbarBar:
         タスクバーをクリックするとタスクバー自身が持ち上がるので、覆われていたら
         並べ直す。ふつうはこれで次の tick には戻る。
 
-        なお スタート メニューを開いている間などは、タスクバーが z バンドごと
-        上に上がる (Shell_TrayWnd が ZBID_IMMERSIVE_MOGO へ移る)。バンドを
-        越えるには UIAccess 権限が要るため、その間はどうやっても前に出られない。
-        張り合わずに軽い要求を出し続け、バンドが下りた瞬間に復帰する。
+        ただし スタート メニューを開くと、タスクバーは z バンドごと上がり
+        (1 → 6)、**スタート メニューを閉じただけでは下りてこない**。別の
+        ウィンドウが活性化されるまで上がったままで、その間はこちらから
+        どうやっても前に出られない (UIAccess 権限が要る)。越えられないと
+        分かっている間は要求を出さない。
         """
         if not winapi.is_covered(self._hwnd, cx, cy):
             if DEBUG and self._covered_since is not None:
@@ -350,6 +353,14 @@ class TaskbarBar:
             self._covered_since = time.monotonic()
             if DEBUG:
                 print("タスクバーに覆われました", flush=True)
+
+        taskbar = winapi.taskbar()
+        their_band = winapi.window_band(taskbar) if taskbar else None
+        our_band = winapi.window_band(self._hwnd)
+        if their_band is not None and our_band is not None and their_band > our_band:
+            if DEBUG:
+                print(f"  バンドが上 ({our_band} < {their_band}) なので手が出せない", flush=True)
+            return
         winapi.raise_to_top(self._hwnd)
 
     def _hide(self) -> None:
@@ -374,7 +385,7 @@ class TaskbarBar:
             self.artist_item, text=elide(artist, self.f_artist, self._text_width)
         )
 
-        art_key = f"{state.track_key}|{state.status}|{self._art_size}"
+        art_key = f"{state.art_key}|{state.status}|{self._art_size}"
         if art_key != self._art_key:
             self._art_key = art_key
             image = icons.album_art(
