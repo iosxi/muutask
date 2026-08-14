@@ -37,8 +37,13 @@ PyInstaller で単体の exe に固めて、配布用の zip までまとめて�
 
 | 出力 | 中身 |
 | --- | --- |
-| `dist\MuuTask.exe` | Python なしで動く実行ファイル (onefile / コンソールなし) |
+| `dist\MuuTask.exe` | Python なしで動く実行ファイル (onefile / コンソールなし・約 13.6 MB) |
 | `dist\MuuTask-<版>.zip` | 配布用。`MuuTask.exe` と [README.txt](README.txt) |
+
+exe には Python 本体 (2.6 MB)・Tcl/Tk・Pillow・WinRT の射影が丸ごと入るため、
+どうしてもこの程度の大きさになります。使っていない重い依存
+(AVIF コーデック 4.1 MB、OpenSSL 2.1 MB、FreeType 0.9 MB など) は
+`build.ps1` の `$excludes` で外していて、これで 21 MB → 13.6 MB です。
 
 版番号は [config.py](config.py) の `APP_VERSION` が唯一の出どころで、zip 名にも
 使われます。アイコンは [make_icon.py](make_icon.py) がトレイと同じ音符から

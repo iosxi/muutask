@@ -26,6 +26,21 @@ Write-Host "MuuTask $version をビルドします"
 
 & $python (Join-Path $root 'make_icon.py')
 
+# 使っていないのに大きいものを外す。外した分は下のコメントの実測値。
+# アルバム アートは WinRT から JPEG / PNG / BMP で来るので、それ以外の
+# 重い画像コーデックは要らない。ネットワークも一切使わない。
+$excludes = @(
+    'PIL.AvifImagePlugin', 'PIL._avif',      # AVIF コーデック (4.1MB)
+    'PIL._imagingft',                        # FreeType (0.9MB)。文字は Tk が描く
+    'PIL.ImageQt',                           # Qt 連携 (未使用)
+    'ssl', '_ssl', '_hashlib',               # OpenSSL 一式 (2.1MB)
+    'setuptools', 'pkg_resources', '_distutils_hack',
+    'unittest', 'doctest', 'pydoc', 'pdb', 'lib2to3',
+    'email', 'http', 'urllib.request', 'xmlrpc', 'ftplib',
+    'sqlite3', 'curses', 'idlelib', 'test', 'tkinter.test'
+)
+$excludeArgs = $excludes | ForEach-Object { '--exclude-module'; $_ }
+
 $dist = Join-Path $root 'dist'
 $work = Join-Path $root 'build'
 & $python -m PyInstaller `
@@ -34,6 +49,7 @@ $work = Join-Path $root 'build'
     --name MuuTask `
     --icon (Join-Path $root 'muutask.ico') `
     --hidden-import pystray._win32 `
+    @excludeArgs `
     --distpath $dist --workpath $work --specpath $work `
     (Join-Path $root 'app.py')
 
