@@ -136,6 +136,28 @@ def raise_to_top(hwnd: int) -> None:
     user32.SetWindowPos(hwnd, wintypes.HWND(HWND_TOP), 0, 0, 0, 0, flags)
 
 
+def trim_working_set() -> None:
+    """使っていないページを OS に返して常駐量を削る。
+
+    起動時にしか触らないもの (各モジュールの import、Tk の初期化、onefile の
+    展開処理) がそのまま常駐し続けるので、立ち上がったところで一度返す。
+    捨てるのは物理メモリ上の常駐分だけで、必要になれば読み直されるため
+    動作には影響しない。常駐して待つのが仕事のアプリなので効きが大きい。
+    """
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.SetProcessWorkingSetSize.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_size_t,
+            ctypes.c_size_t,
+        ]
+        kernel32.SetProcessWorkingSetSize(
+            kernel32.GetCurrentProcess(), ctypes.c_size_t(-1), ctypes.c_size_t(-1)
+        )
+    except OSError:
+        pass
+
+
 def window_band(hwnd: int) -> Optional[int]:
     """ウィンドウの z バンド。取れなければ None。
 

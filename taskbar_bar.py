@@ -44,8 +44,8 @@ EMPTY_TITLE = "再生中の音楽はありません"
 
 #: 文字送りの速さ (96 DPI 基準の px/秒)
 SCROLL_SPEED = 34.0
-#: 動き出すまでの待ち時間 (秒)。頭を読ませてから流す
-SCROLL_DELAY = 1.6
+#: 先頭に戻ったところで止まる時間 (秒)。頭を読ませてから流す
+SCROLL_PAUSE = 1.0
 #: 繰り返しの間に入れる空き
 SCROLL_GAP = "　　　　"
 
@@ -87,7 +87,7 @@ class TaskbarBar:
         self._offsets: dict[str, float] = {}
         self._text_x = 0
         self._text_y: dict[str, int] = {"title": 0, "artist": 0}
-        self._scroll_at = 0.0  # この時刻から流し始める
+        self._pause_until: dict[str, float] = {}  # 先頭で止めておく時刻 (行ごと)
         self._scrolled_at = time.monotonic()
 
         self.win = tk.Toplevel(root)
@@ -131,9 +131,10 @@ class TaskbarBar:
                 "track": "#55555f",
                 "end": "#9a9aa4",
             }
-            # 流れる文字の上に置くので、地色から少し浮かせた座を敷く
-            colors["chip"] = mix(bg, "#ffffff", 0.16)
-            colors["chip_hover"] = mix(bg, "#ffffff", 0.30)
+            # 座は 50% の網掛けで敷くので、半分は地色が出る。網の色は
+            # そのぶん濃いめにしておかないと座に見えない。
+            colors["chip"] = mix(bg, "#ffffff", 0.42)
+            colors["chip_hover"] = mix(bg, "#ffffff", 0.72)
             return colors
         colors = {
             "bg": bg,
@@ -145,8 +146,8 @@ class TaskbarBar:
             "track": "#b6b6be",
             "end": "#7a7a84",
         }
-        colors["chip"] = mix(bg, "#000000", 0.12)
-        colors["chip_hover"] = mix(bg, "#000000", 0.22)
+        colors["chip"] = mix(bg, "#000000", 0.30)
+        colors["chip_hover"] = mix(bg, "#000000", 0.55)
         return colors
 
     def _sample_background(self, x: int, y: int, width: int, height: int) -> None:
@@ -267,8 +268,11 @@ class TaskbarBar:
             x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1,
             x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
         ]
+        # stipple="gray50" で 1 ドットおきに塗る = 50% の半透明。Tk の Canvas は
+        # 項目ごとのアルファ合成ができないので、裏の文字を透かすにはこれを使う。
         return self.canvas.create_polygon(
-            points, smooth=True, splinesteps=12, width=0, fill=self.colors["chip"]
+            points, smooth=True, splinesteps=12, width=0,
+            fill=self.colors["chip"], stipple="gray50",
         )
 
     def _bind(self) -> None:
@@ -489,24 +493,30 @@ class TaskbarBar:
             self.canvas.itemconfigure(item, text=text + SCROLL_GAP + text)
         self._offsets[key] = 0.0
         self.canvas.coords(item, self._text_x, self._text_y[key])
-        self._scroll_at = time.monotonic() + SCROLL_DELAY
+        self._pause_until[key] = time.monotonic() + SCROLL_PAUSE
 
     def scroll_tick(self) -> None:
-        """流れる文字を 1 コマ進める。app 側から短い間隔で呼ばれる。"""
+        """流れる文字を 1 コマ進める。app 側から短い間隔で呼ばれる。
+
+        先頭に戻ったところで少し止める。行ごとに独立して数えるので、
+        タイトルとアーティスト行の停止は揃わない (長さが違うため)。
+        """
         if not self.visible or self._built_size is None:
             return
         now = time.monotonic()
         elapsed, self._scrolled_at = now - self._scrolled_at, now
-        if now < self._scroll_at or elapsed <= 0 or elapsed > 1.0:
+        if elapsed <= 0 or elapsed > 1.0:  # 復帰直後などに飛ばないように
             return
         step = SCROLL_SPEED * self.scale * elapsed
         for key, item in (("title", self.title_item), ("artist", self.artist_item)):
             period = self._periods.get(key, 0)
-            if period <= 0:
+            if period <= 0 or now < self._pause_until.get(key, 0.0):
                 continue
             offset = self._offsets.get(key, 0.0) + step
             if offset >= period:
-                offset -= period
+                # 一周した。先頭に戻して、また少し止める
+                offset = 0.0
+                self._pause_until[key] = now + SCROLL_PAUSE
             self._offsets[key] = offset
             try:
                 self.canvas.coords(item, self._text_x - offset, self._text_y[key])

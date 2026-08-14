@@ -17,6 +17,7 @@ from ctypes import wintypes
 from typing import Callable
 
 import theme
+import winapi
 from config import Config
 from media_session import MediaController, NowPlaying
 from taskbar_bar import BAR_ANCHORS, BAR_WIDTHS, TaskbarBar
@@ -27,6 +28,8 @@ DRAIN_INTERVAL = 80  # ms
 TICK_INTERVAL = 250  # ms
 SYNC_INTERVAL = 250  # ms (タスクバーへの追従。長いと潜ったときの復帰が目立つ)
 SCROLL_INTERVAL = 40  # ms (文字送り。25 コマ/秒)
+TRIM_DELAY = 5_000  # ms (起動が落ち着いてから常駐量を削るまで)
+TRIM_INTERVAL = 600_000  # ms (以後の間引き)
 
 
 def _already_running() -> bool:
@@ -134,6 +137,10 @@ class App:
         except tk.TclError:
             pass
         self.root.after(SCROLL_INTERVAL, self._scroll)
+
+    def _trim(self) -> None:
+        winapi.trim_working_set()
+        self.root.after(TRIM_INTERVAL, self._trim)
 
     # ------------------------------------------------------------------ メニュー
 
@@ -257,6 +264,7 @@ class App:
         self.root.after(TICK_INTERVAL, self._tick)
         self.root.after(0, self._sync)
         self.root.after(SCROLL_INTERVAL, self._scroll)
+        self.root.after(TRIM_DELAY, self._trim)
         try:
             self.root.mainloop()
         finally:
