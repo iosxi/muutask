@@ -26,6 +26,7 @@ MUTEX_NAME = "MuuTask.SingleInstance"
 DRAIN_INTERVAL = 80  # ms
 TICK_INTERVAL = 250  # ms
 SYNC_INTERVAL = 250  # ms (タスクバーへの追従。長いと潜ったときの復帰が目立つ)
+SCROLL_INTERVAL = 40  # ms (文字送り。25 コマ/秒)
 
 
 def _already_running() -> bool:
@@ -126,6 +127,13 @@ class App:
         except tk.TclError:
             pass
         self.root.after(SYNC_INTERVAL, self._sync)
+
+    def _scroll(self) -> None:
+        try:
+            self.bar.scroll_tick()
+        except tk.TclError:
+            pass
+        self.root.after(SCROLL_INTERVAL, self._scroll)
 
     # ------------------------------------------------------------------ メニュー
 
@@ -248,6 +256,7 @@ class App:
         self.root.after(DRAIN_INTERVAL, self._drain)
         self.root.after(TICK_INTERVAL, self._tick)
         self.root.after(0, self._sync)
+        self.root.after(SCROLL_INTERVAL, self._scroll)
         try:
             self.root.mainloop()
         finally:

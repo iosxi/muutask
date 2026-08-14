@@ -42,6 +42,15 @@ class IconSet:
         return (MDL2_GLYPHS if self._mdl2 else PLAIN_GLYPHS)[name]
 
 
+def mix(a: str, b: str, t: float) -> str:
+    """#rrggbb の 2 色を t (0..1) で混ぜる。ボタンの座の色を作るのに使う。"""
+    ca = [int(a[i : i + 2], 16) for i in (1, 3, 5)]
+    cb = [int(b[i : i + 2], 16) for i in (1, 3, 5)]
+    return "#%02x%02x%02x" % tuple(
+        max(0, min(255, round(x + (y - x) * t))) for x, y in zip(ca, cb)
+    )
+
+
 def elide(text: str, font: tkfont.Font, max_width: int) -> str:
     """入りきらない文字列を末尾 "…" で省略する。"""
     if not text or max_width <= 0 or font.measure(text) <= max_width:

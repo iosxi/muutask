@@ -18,7 +18,7 @@ from PIL import ImageTk
 import icons
 import winapi
 from media_session import NowPlaying
-from uiutil import IconSet, TEXT_FAMILIES, elide, luminance, pick_font
+from uiutil import IconSet, TEXT_FAMILIES, luminance, mix, pick_font
 
 #: 既定のバー幅 (96 DPI 基準の px)
 DEFAULT_WIDTH = 340
@@ -41,6 +41,13 @@ BAR_WIDTHS = (
 MIN_WIDTH = 120
 
 EMPTY_TITLE = "再生中の音楽はありません"
+
+#: 文字送りの速さ (96 DPI 基準の px/秒)
+SCROLL_SPEED = 34.0
+#: 動き出すまでの待ち時間 (秒)。頭を読ませてから流す
+SCROLL_DELAY = 1.6
+#: 繰り返しの間に入れる空き
+SCROLL_GAP = "　　　　"
 
 #: MUUTASK_DEBUG=1 で追従処理のログを出す
 DEBUG = bool(os.environ.get("MUUTASK_DEBUG"))
@@ -74,6 +81,14 @@ class TaskbarBar:
         self._hover: Optional[str] = None
         self._pressed: Optional[str] = None
         self._hitboxes: dict[str, tuple[int, int, int, int]] = {}
+        # 流れる文字まわり
+        self._texts: dict[str, str] = {}
+        self._periods: dict[str, int] = {}  # 0 なら流さない (収まっている)
+        self._offsets: dict[str, float] = {}
+        self._text_x = 0
+        self._text_y: dict[str, int] = {"title": 0, "artist": 0}
+        self._scroll_at = 0.0  # この時刻から流し始める
+        self._scrolled_at = time.monotonic()
 
         self.win = tk.Toplevel(root)
         self.win.withdraw()
@@ -106,7 +121,7 @@ class TaskbarBar:
         bg = self.config.bar_bg or sampled or "#1f1f22"
         dark = luminance(bg) < 0.45
         if dark:
-            return {
+            colors = {
                 "bg": bg,
                 "title": "#ffffff",
                 "artist": "#bdbdc6",
@@ -114,8 +129,13 @@ class TaskbarBar:
                 "hover": "#ffffff",
                 "disabled": "#6a6a72",
                 "track": "#55555f",
+                "end": "#9a9aa4",
             }
-        return {
+            # 流れる文字の上に置くので、地色から少し浮かせた座を敷く
+            colors["chip"] = mix(bg, "#ffffff", 0.16)
+            colors["chip_hover"] = mix(bg, "#ffffff", 0.30)
+            return colors
+        colors = {
             "bg": bg,
             "title": "#101014",
             "artist": "#4a4a52",
@@ -123,7 +143,11 @@ class TaskbarBar:
             "hover": "#000000",
             "disabled": "#a0a0a8",
             "track": "#b6b6be",
+            "end": "#7a7a84",
         }
+        colors["chip"] = mix(bg, "#000000", 0.12)
+        colors["chip_hover"] = mix(bg, "#000000", 0.22)
+        return colors
 
     def _sample_background(self, x: int, y: int, width: int, height: int) -> None:
         """バーを置く場所のタスクバー色を拾って、地色を合わせる。"""
@@ -160,44 +184,72 @@ class TaskbarBar:
         play_cx = next_cx - btn
         prev_cx = play_cx - btn
         cy = height // 2
-        text_right = prev_cx - btn // 2 - max(6, round(height * 0.10))
-        self._text_width = max(20, text_right - text_x)
 
-        self.art_item = c.create_image(pad, pad, anchor="nw")
+        chip_h = max(18, round(height * 0.56))
+        chip_w = max(18, btn - max(2, round(height * 0.06)))
+        chips_left = prev_cx - chip_w // 2
+
+        # 文字はバーの右端まで使う (収まらない分は流れてボタンの裏を通る)。
+        # ただし「流すかどうか」はボタンの手前までで判定する。ここに収まって
+        # いれば動かさずに全部読めるし、はみ出すなら流さないと末尾がボタンの
+        # 裏に隠れたままになる。
+        self._text_x = text_x
+        self._text_width = max(20, chips_left - max(4, round(height * 0.08)) - text_x)
+        title_y = round(height * 0.06)
+        artist_y = round(height * 0.58)
+        self._text_y = {"title": title_y, "artist": artist_y}
+
+        # 1. 文字 (いちばん奥)
         self.title_item = c.create_text(
-            text_x, round(height * 0.13), anchor="nw",
+            text_x, title_y, anchor="nw",
             font=self.f_title, fill=self.colors["title"],
         )
         self.artist_item = c.create_text(
-            text_x, round(height * 0.47), anchor="nw",
+            text_x, artist_y, anchor="nw",
             font=self.f_artist, fill=self.colors["artist"],
         )
 
-        prog_y = height - pad - 1
+        # 2. アルバム アートの領域を隠す覆い (流れてきた文字をここで消す)
+        c.create_rectangle(0, 0, text_x - 1, height, fill=self.colors["bg"], width=0)
+        self.art_item = c.create_image(pad, pad, anchor="nw")
+
+        # 3. シーク バーはタイトルとアーティストの間。ボタンの手前で止める
+        prog_y = round(height * 0.50)
+        prog_right = prev_cx - btn // 2 - max(6, round(height * 0.12))
         self.track_item = c.create_line(
-            text_x, prog_y, text_right, prog_y,
+            text_x, prog_y, prog_right, prog_y,
             width=2, fill=self.colors["track"], capstyle=tk.ROUND,
         )
         self.fill_item = c.create_line(
             text_x, prog_y, text_x, prog_y,
             width=2, fill=self.colors["title"], capstyle=tk.ROUND, state="hidden",
         )
-        self._prog = (text_x, text_right, prog_y)
+        # 終端が分かるように、右端に縦の目印を立てる
+        end_h = max(3, round(height * 0.10))
+        self.end_item = c.create_line(
+            prog_right, prog_y - end_h, prog_right, prog_y + end_h,
+            width=2, fill=self.colors["end"], capstyle=tk.ROUND,
+        )
+        self._prog = (text_x, prog_right, prog_y)
 
-        self.prev_item = c.create_text(
-            prev_cx, cy, font=self.f_icon, fill=self.colors["button"],
-            text=self.icons.glyph("prev"),
-        )
-        self.play_item = c.create_text(
-            play_cx, cy, font=self.f_icon, fill=self.colors["button"],
-            text=self.icons.glyph("play"),
-        )
-        self.next_item = c.create_text(
-            next_cx, cy, font=self.f_icon, fill=self.colors["button"],
-            text=self.icons.glyph("next"),
-        )
+        # 4. ボタン (座 + 記号)。文字より前面に出したいので最後に作る
+        radius = max(3, round(min(chip_w, chip_h) * 0.30))
+        self.chips = {}
+        self.buttons = {}
+        for name, cx_ in (("prev", prev_cx), ("play", play_cx), ("next", next_cx)):
+            self.chips[name] = self._rounded(
+                cx_ - chip_w // 2, cy - chip_h // 2,
+                cx_ + chip_w // 2, cy + chip_h // 2, radius,
+            )
+            self.buttons[name] = c.create_text(
+                cx_, cy, font=self.f_icon, fill=self.colors["button"],
+                text=self.icons.glyph("play" if name == "play" else name),
+            )
+        self.prev_item = self.buttons["prev"]
+        self.play_item = self.buttons["play"]
+        self.next_item = self.buttons["next"]
 
-        half = btn // 2
+        half = chip_w // 2
         self._hitboxes = {
             "prev": (prev_cx - half, 0, prev_cx + half, height),
             "play": (play_cx - half, 0, play_cx + half, height),
@@ -205,7 +257,19 @@ class TaskbarBar:
         }
         self._art_size = art
         self._art_key = None  # 作り直したので再描画させる
+        self._texts = {}  # 作り直したので文字も入れ直す
         self._built_size = (width, height)
+
+    def _rounded(self, x0: int, y0: int, x1: int, y1: int, r: int):
+        """角丸の四角。Tk の Canvas には無いので、滑らかな多角形で描く。"""
+        points = [
+            x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r,
+            x1, y1 - r, x1, y1, x1 - r, y1, x0 + r, y1,
+            x0, y1, x0, y1 - r, x0, y0 + r, x0, y0,
+        ]
+        return self.canvas.create_polygon(
+            points, smooth=True, splinesteps=12, width=0, fill=self.colors["chip"]
+        )
 
     def _bind(self) -> None:
         c = self.canvas
@@ -379,11 +443,13 @@ class TaskbarBar:
 
         has_media = state.has_media and bool(state.title or state.artist)
         title = state.title if has_media else EMPTY_TITLE
-        artist = " · ".join(x for x in (state.artist, state.app_name) if x) if has_media else ""
-        c.itemconfigure(self.title_item, text=elide(title, self.f_title, self._text_width))
-        c.itemconfigure(
-            self.artist_item, text=elide(artist, self.f_artist, self._text_width)
+        artist = (
+            " · ".join(x for x in (state.artist, state.album, state.app_name) if x)
+            if has_media
+            else ""
         )
+        self._set_text("title", self.title_item, self.f_title, title)
+        self._set_text("artist", self.artist_item, self.f_artist, artist)
 
         art_key = f"{state.art_key}|{state.status}|{self._art_size}"
         if art_key != self._art_key:
@@ -406,15 +472,56 @@ class TaskbarBar:
         self._paint_buttons()
         self.update_progress()
 
+    def _set_text(self, key: str, item, font, text: str) -> None:
+        """文字を入れる。入りきらないときは流せるように 2 つ繋げて持たせる。
+
+        同じ文字なら位置を保つ (更新のたびに頭へ戻ると読めなくなる)。
+        """
+        if self._texts.get(key) == text:
+            return
+        self._texts[key] = text
+        if font.measure(text) <= self._text_width:
+            self._periods[key] = 0
+            self.canvas.itemconfigure(item, text=text)
+        else:
+            # 末尾まで流れたら頭に戻る、を繋ぎ目なく見せるため 2 回並べる
+            self._periods[key] = font.measure(text + SCROLL_GAP)
+            self.canvas.itemconfigure(item, text=text + SCROLL_GAP + text)
+        self._offsets[key] = 0.0
+        self.canvas.coords(item, self._text_x, self._text_y[key])
+        self._scroll_at = time.monotonic() + SCROLL_DELAY
+
+    def scroll_tick(self) -> None:
+        """流れる文字を 1 コマ進める。app 側から短い間隔で呼ばれる。"""
+        if not self.visible or self._built_size is None:
+            return
+        now = time.monotonic()
+        elapsed, self._scrolled_at = now - self._scrolled_at, now
+        if now < self._scroll_at or elapsed <= 0 or elapsed > 1.0:
+            return
+        step = SCROLL_SPEED * self.scale * elapsed
+        for key, item in (("title", self.title_item), ("artist", self.artist_item)):
+            period = self._periods.get(key, 0)
+            if period <= 0:
+                continue
+            offset = self._offsets.get(key, 0.0) + step
+            if offset >= period:
+                offset -= period
+            self._offsets[key] = offset
+            try:
+                self.canvas.coords(item, self._text_x - offset, self._text_y[key])
+            except tk.TclError:
+                return
+
     def update_progress(self) -> None:
         if self._built_size is None:
             return
         c = self.canvas
         state = self.state
         x0, x1, y = self._prog
-        c.itemconfigure(
-            self.track_item, state="normal" if state.has_media else "hidden"
-        )
+        shown = "normal" if state.has_media else "hidden"
+        c.itemconfigure(self.track_item, state=shown)
+        c.itemconfigure(self.end_item, state=shown)
         if not state.has_media or state.duration <= 0:
             c.itemconfigure(self.fill_item, state="hidden")
             return
@@ -426,15 +533,16 @@ class TaskbarBar:
         if self._built_size is None:
             return
         c = self.canvas
-        for name, item in (
-            ("prev", self.prev_item),
-            ("play", self.play_item),
-            ("next", self.next_item),
-        ):
+        for name, item in self.buttons.items():
+            hover = self._hover == name
             if not self._enabled(name):
                 color = self.colors["disabled"]
-            elif self._hover == name:
+            elif hover:
                 color = self.colors["hover"]
             else:
                 color = self.colors["button"]
             c.itemconfigure(item, fill=color)
+            c.itemconfigure(
+                self.chips[name],
+                fill=self.colors["chip_hover"] if hover else self.colors["chip"],
+            )
