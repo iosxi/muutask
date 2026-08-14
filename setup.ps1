@@ -1,4 +1,4 @@
-# MuuTask の仮想環境を作って依存パッケージを入れる。
+﻿# MuuTask の仮想環境を作って依存パッケージを入れる。
 #   powershell -ExecutionPolicy Bypass -File setup.ps1
 
 $ErrorActionPreference = 'Stop'

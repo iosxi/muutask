@@ -26,6 +26,25 @@ powershell -ExecutionPolicy Bypass -File setup.ps1   # 初回だけ
 そのあとは `run.vbs` をダブルクリックすると、コンソールを出さずに常駐します。
 ログを見ながら動かしたいときは `.venv\Scripts\python.exe app.py`。
 
+### 配布用の exe を作る
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build.ps1
+```
+
+PyInstaller で単体の exe に固めて、配布用の zip までまとめて作ります
+(初回は PyInstaller の取得が入ります)。
+
+| 出力 | 中身 |
+| --- | --- |
+| `dist\MuuTask.exe` | Python なしで動く実行ファイル (onefile / コンソールなし) |
+| `dist\MuuTask-<版>.zip` | 配布用。`MuuTask.exe` と [README.txt](README.txt) |
+
+版番号は [config.py](config.py) の `APP_VERSION` が唯一の出どころで、zip 名にも
+使われます。アイコンは [make_icon.py](make_icon.py) がトレイと同じ音符から
+`muutask.ico` を書き出したものを埋め込みます。`dist` と `build` は Git には
+入れていません。
+
 ### 操作
 
 | 操作 | 動き |

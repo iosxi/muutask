@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+
+# build.ps1 の出力 (配布物はリポジトリに置かず、リリースに添付する)
+build/
+dist/
+*.spec

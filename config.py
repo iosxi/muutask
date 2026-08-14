@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 APP_NAME = "MuuTask"
+APP_VERSION = "1.0.0"
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / APP_NAME
 CONFIG_PATH = CONFIG_DIR / "config.json"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -55,6 +56,9 @@ class Config:
 
 def _launch_command() -> str:
     """ログオン時に実行するコマンド (コンソールなしで起動)。"""
+    if getattr(sys, "frozen", False):
+        # exe 版。app.py は exe の中なので実行ファイルだけを登録する
+        return f'"{Path(sys.executable)}"'
     exe = Path(sys.executable)
     pythonw = exe.with_name("pythonw.exe")
     launcher = pythonw if pythonw.exists() else exe
