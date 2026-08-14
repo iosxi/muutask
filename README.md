@@ -45,8 +45,9 @@ exe には Python 本体 (2.6 MB)・Tcl/Tk・Pillow・WinRT の射影が丸ご�
 (AVIF コーデック 4.1 MB、OpenSSL 2.1 MB、FreeType 0.9 MB など) は
 `build.ps1` の `$excludes` で外していて、これで 21 MB → 13.6 MB です。
 
-版番号は [config.py](config.py) の `APP_VERSION` が唯一の出どころで、zip 名にも
-使われます。アイコンは [make_icon.py](make_icon.py) がトレイと同じ音符から
+版番号は [config.py](config.py) の `APP_VERSION` が唯一の出どころで、zip 名と
+[README.txt](README.txt) の `@VERSION@` に埋め込まれます。**`v1` から始めて、
+配布物を作るたびに 1 ずつ上げます** (`v1`, `v2`, `v3`, ...)。アイコンは [make_icon.py](make_icon.py) がトレイと同じ音符から
 `muutask.ico` を書き出したものを埋め込みます。`dist` と `build` は Git には
 入れていません。
 

@@ -20,8 +20,8 @@ if (-not $?) {
     & $python -m pip install pyinstaller
 }
 
-# 版番号は config.py の APP_VERSION を唯一の出どころにする
-$version = & $python -c 'import config; print(config.APP_VERSION)'
+# 版番号は config.py の APP_VERSION を唯一の出どころにする (v1 から 1 ずつ)
+$version = 'v' + (& $python -c 'import config; print(config.APP_VERSION)')
 Write-Host "MuuTask $version をビルドします"
 
 & $python (Join-Path $root 'make_icon.py')
@@ -61,7 +61,12 @@ $stage = Join-Path $work "package\MuuTask-$version"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item $exe $stage
-Copy-Item (Join-Path $root 'README.txt') $stage
+
+# README.txt の版番号は置換で埋める (config.py と二重管理にしないため)
+$readme = [IO.File]::ReadAllText((Join-Path $root 'README.txt'))
+if ($readme -notmatch '@VERSION@') { throw 'README.txt に @VERSION@ がありません。' }
+$readme = $readme -replace '@VERSION@', $version.TrimStart('v')
+[IO.File]::WriteAllText((Join-Path $stage 'README.txt'), $readme, (New-Object Text.UTF8Encoding $true))
 
 $zip = Join-Path $dist "MuuTask-$version.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }

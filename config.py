@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 APP_NAME = "MuuTask"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1"  # v1 から配布のたびに 1 ずつ上げる
 CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / APP_NAME
 CONFIG_PATH = CONFIG_DIR / "config.json"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
