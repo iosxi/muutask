@@ -16,7 +16,6 @@ import tkinter as tk
 from ctypes import wintypes
 from typing import Callable
 
-import config as config_module
 import theme
 from config import Config
 from media_session import MediaController, NowPlaying
@@ -196,11 +195,6 @@ class App:
             variable=self._var(self.config.pinned),
             command=self._toggle_pin,
         )
-        menu.add_checkbutton(
-            label="Windows 起動時に実行",
-            variable=self._var(config_module.autostart_enabled()),
-            command=self._toggle_autostart,
-        )
         menu.add_separator()
         menu.add_command(label="終了", command=self.quit)
         return menu
@@ -224,10 +218,6 @@ class App:
         self.config.bar_hide_when_idle = not self.config.bar_hide_when_idle
         self.config.save()
         self.bar.sync()
-        self.tray.refresh_menu()
-
-    def _toggle_autostart(self) -> None:
-        config_module.set_autostart(not config_module.autostart_enabled())
         self.tray.refresh_menu()
 
     def _toggle_pin(self) -> None:

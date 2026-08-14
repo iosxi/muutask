@@ -2,6 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 
+# 設定はソース実行時ここに出来る (exe 版は exe と同じフォルダー)
+config.json
+
 # build.ps1 の出力 (配布物はリポジトリに置かず、リリースに添付する)
 build/
 dist/

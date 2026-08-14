@@ -8,7 +8,6 @@ from typing import Callable, Optional
 import pystray
 from pystray import Menu, MenuItem
 
-import config as config_module
 import icons
 from media_session import NowPlaying
 from taskbar_bar import BAR_ANCHORS
@@ -65,11 +64,6 @@ class Tray:
                 lambda: on_toggle_pin(),
                 checked=lambda _i: self.config.pinned,
             ),
-            MenuItem(
-                "Windows 起動時に実行",
-                self._toggle_autostart,
-                checked=lambda _i: config_module.autostart_enabled(),
-            ),
             Menu.SEPARATOR,
             MenuItem("終了", lambda: on_quit()),
         )
@@ -110,10 +104,6 @@ class Tray:
 
         for value, label in BAR_ANCHORS:
             yield MenuItem(label, select(value), checked=is_selected(value), radio=True)
-
-    def _toggle_autostart(self, _icon=None, _item=None) -> None:
-        config_module.set_autostart(not config_module.autostart_enabled())
-        self.refresh_menu()
 
     # ------------------------------------------------------------------ 見た目
 

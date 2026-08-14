@@ -1,20 +1,66 @@
-"""設定の保存と、スタートアップ登録。"""
+"""設定の保存。
+
+レジストリには一切書かない。設定は exe と同じフォルダーの config.json だけ
+なので、やめるときはフォルダーごと削除すれば痕跡が残らない。
+"""
 
 from __future__ import annotations
 
 import json
 import os
 import sys
-import winreg
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
 APP_NAME = "MuuTask"
-APP_VERSION = "1"  # v1 から配布のたびに 1 ずつ上げる
-CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home())) / APP_NAME
-CONFIG_PATH = CONFIG_DIR / "config.json"
-RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+APP_VERSION = "2"  # v1 から配布のたびに 1 ずつ上げる
+
+
+def _config_path() -> Path:
+    """設定は exe と同じフォルダーに置く。
+
+    アンインストーラーの無いツールなので、消し忘れる場所を作らないことを
+    優先している。onefile では sys._MEIPASS が %TEMP% の展開先を指すので、
+    そちらではなく sys.executable のある階層を使う (終了時に消える場所に
+    書かないため)。
+    """
+    base = (
+        Path(sys.executable).parent
+        if getattr(sys, "frozen", False)
+        else Path(__file__).resolve().parent
+    )
+    return base / "config.json"
+
+
+CONFIG_PATH = _config_path()
+
+
+def _legacy_config_path() -> Optional[Path]:
+    """v1 以前の保存先。%APPDATA% が無い環境では None を返す。"""
+    base = os.environ.get("APPDATA")
+    return Path(base) / APP_NAME / "config.json" if base else None
+
+
+def _take_over_legacy_config() -> None:
+    """v1 以前が %APPDATA%\\MuuTask\\ に残した設定を引き継いで、その跡を消す。
+
+    設定を exe と同じフォルダーへ移した目的が「やめるときにフォルダーごと
+    消せば痕跡が残らないこと」なので、旧フォルダーを放置すると目的を
+    果たせない。新しい場所に設定がまだ無いときだけ中身を移し、旧ファイルを
+    消してからフォルダーも消す。rmdir は空でなければ失敗するので、他人の
+    ものは残る。触るのは自分で作った %APPDATA%\\MuuTask\\ だけ。
+    """
+    old = _legacy_config_path()
+    if old is None or not old.exists():
+        return
+    try:
+        if not CONFIG_PATH.exists():
+            CONFIG_PATH.write_bytes(old.read_bytes())
+        old.unlink()
+        old.parent.rmdir()
+    except OSError:
+        pass
 
 
 @dataclass
@@ -33,6 +79,7 @@ class Config:
 
     @classmethod
     def load(cls) -> "Config":
+        _take_over_legacy_config()
         try:
             # utf-8-sig: 手で編集したときの BOM 付きファイルも読めるように
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
@@ -42,48 +89,14 @@ class Config:
         return cls(**{k: v for k, v in data.items() if k in known})
 
     def save(self) -> None:
+        """保存に失敗しても、その回の動作は続けられるようにする。
+
+        書き込み不可の場所 (Program Files 直下など) に置かれた場合は黙って
+        諦める。その回の変更は効いたままで、次回起動時に既定値へ戻るだけ。
+        """
         try:
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
             CONFIG_PATH.write_text(
                 json.dumps(asdict(self), indent=2), encoding="utf-8"
             )
         except OSError:
             pass
-
-
-# ----------------------------------------------------------------- スタートアップ
-
-
-def _launch_command() -> str:
-    """ログオン時に実行するコマンド (コンソールなしで起動)。"""
-    if getattr(sys, "frozen", False):
-        # exe 版。app.py は exe の中なので実行ファイルだけを登録する
-        return f'"{Path(sys.executable)}"'
-    exe = Path(sys.executable)
-    pythonw = exe.with_name("pythonw.exe")
-    launcher = pythonw if pythonw.exists() else exe
-    script = Path(__file__).with_name("app.py")
-    return f'"{launcher}" "{script}"'
-
-
-def autostart_enabled() -> bool:
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
-            value, _ = winreg.QueryValueEx(key, APP_NAME)
-            return bool(value)
-    except OSError:
-        return False
-
-
-def set_autostart(enabled: bool) -> None:
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_WRITE) as key:
-            if enabled:
-                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, _launch_command())
-            else:
-                try:
-                    winreg.DeleteValue(key, APP_NAME)
-                except FileNotFoundError:
-                    pass
-    except OSError:
-        pass
