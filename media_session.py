@@ -26,6 +26,8 @@ from winrt.windows.media.control import (
 )
 from winrt.windows.storage.streams import Buffer, InputStreamOptions
 
+import errlog
+
 # 100 ナノ秒刻み (WinRT の TimeSpan) → 秒
 TICKS_PER_SECOND = 10_000_000
 
@@ -33,6 +35,17 @@ TICKS_PER_SECOND = 10_000_000
 ART_RETRY_WINDOW = 8.0
 #: その間の読み直し間隔 (秒)。遅れて届くアートを早く拾うため短くする
 ART_POLL = 0.3
+
+#: WinRT の非同期呼び出しを待つ上限 (秒)。相手のアプリが応答しなくなっても
+#: ここで見切りをつけて、監視を続けられるようにする
+WINRT_TIMEOUT = 5.0
+#: 1 周ぶんの上限 (秒)。1 周で WinRT を数回呼ぶので、その合計より長くとる。
+#: 個々の呼び出しの網から漏れたときの、最後の受け皿
+CYCLE_TIMEOUT = 20.0
+#: 続けてこの回数しくじったら、セッションを張り直す
+RESET_AFTER = 3
+#: ワーカーごと落ちたときに、立て直すまで置く間隔 (秒)
+RESTART_DELAY = 1.0
 
 # アプリ ID からそれっぽい表示名を作るための対応表
 FRIENDLY_NAMES = {
@@ -65,7 +78,44 @@ def friendly_app_name(app_id: str) -> str:
     name = app_id.split("!")[-1].split("_")[0]
     if name.lower().endswith(".exe"):
         name = name[:-4]
+    # ブラウザーのアプリ (PWA / 拡張) は "Chrome._crx_xxxx" の形で来る。
+    # 区切りの "." が末尾に残ると、この後の split で空になってしまう
+    name = name.rstrip(".")
     return name.split(".")[-1] or app_id
+
+
+class _Stalled(Exception):
+    """WinRT の非同期呼び出しが返ってこなかった。"""
+
+
+def _discard(task) -> None:
+    """見捨てた待ち受けの結果を捨てる (未処理例外の警告を出さないため)。"""
+    if not task.cancelled():
+        task.exception()
+
+
+async def _call(op, timeout: float = WINRT_TIMEOUT):
+    """WinRT の非同期呼び出しを、必ず返ってくるようにする。
+
+    asyncio.wait_for は使えない。pywinrt のラッパーは取り消されると
+    IAsyncOperation.cancel() を呼んでから **完了を待ち直す** ので、相手が
+    応答しないままだと取り消しごと道連れで固まる。ここでは待つのをやめる
+    だけにして、残った待ち受けは放っておく。
+    """
+    task = asyncio.ensure_future(op)
+    task.add_done_callback(_discard)
+    done, _pending = await asyncio.wait((task,), timeout=timeout)
+    if not done:
+        raise _Stalled(f"{timeout} 秒待っても返ってきませんでした")
+    return task.result()
+
+
+def _app_id(session) -> str:
+    """セッションのアプリ ID。閉じかけのセッションでも落ちないようにする。"""
+    try:
+        return session.source_app_user_model_id or ""
+    except OSError:
+        return ""
 
 
 @dataclass(frozen=True)
@@ -137,7 +187,8 @@ class MediaController:
 
         self._manager = None
         self._session = None
-        self._session_id = ""
+        # (解除する関数, トークン) の組
+        self._manager_tokens: list = []
         self._session_tokens: list = []
         # WinRT のイベント ハンドラは参照を保持しておかないと GC される
         self._manager_handlers: list = []
@@ -147,6 +198,7 @@ class MediaController:
         self._track_key = ""
         self._thumbnail: Optional[bytes] = None
         self._art_deadline = 0.0  # この時刻まではアルバム アートを読み直す
+        self._failures = 0  # 続けてしくじった回数
         self._dirty: Optional[asyncio.Event] = None
         self._state = NowPlaying()
 
@@ -197,29 +249,37 @@ class MediaController:
             coro.close()
 
     async def _refresh_now(self) -> None:
-        await self._update()
+        await self._safe_update()
 
     async def _cmd(self, name: str, arg: float = 0.0) -> None:
         session = self._session
-        if session is None:
-            return
-        try:
-            if name == "toggle":
-                await session.try_toggle_play_pause_async()
-            elif name == "next":
-                await session.try_skip_next_async()
-            elif name == "prev":
-                await session.try_skip_previous_async()
-            elif name == "seek":
-                await session.try_change_playback_position_async(
-                    int(max(0.0, arg) * TICKS_PER_SECOND)
-                )
-        except OSError:
-            # アプリ側が要求を受け付けない場合がある。次の更新で状態は追いつく。
-            pass
+        if session is not None:
+            try:
+                if name == "toggle":
+                    await _call(session.try_toggle_play_pause_async())
+                elif name == "next":
+                    await _call(session.try_skip_next_async())
+                elif name == "prev":
+                    await _call(session.try_skip_previous_async())
+                elif name == "seek":
+                    await _call(
+                        session.try_change_playback_position_async(
+                            int(max(0.0, arg) * TICKS_PER_SECOND)
+                        )
+                    )
+            except Exception:
+                # アプリ側が要求を受け付けない場合がある。次の更新で追いつく。
+                errlog.exception(f"操作 {name} を送れませんでした")
         # 操作直後は状態が変わるので少し待ってから読み直す
         await asyncio.sleep(0.15)
-        await self._update()
+        await self._safe_update()
+
+    async def _safe_update(self) -> None:
+        """例外を持ち出さない更新。ワーカーの周回の外から呼ぶとき用。"""
+        try:
+            await self._update()
+        except Exception:
+            self._note_failure()
 
     def _wake(self) -> None:
         if self._dirty is not None:
@@ -239,37 +299,55 @@ class MediaController:
             winrt.runtime.init_apartment(winrt.runtime.ApartmentType.MULTI_THREADED)
         except OSError:
             pass
-        loop = asyncio.new_event_loop()
-        self._loop = loop
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(self._worker())
-        finally:
-            self._detach_session()
-            loop.close()
-            self._loop = None
+        # ワーカーが何かの拍子に落ちても、ここで立て直す。監視が止まると
+        # 表示は最後の曲のまま、ボタンも効かないまま二度と戻らないので、
+        # 諦めてよいのは終了するときだけ。
+        while not self._stopping:
+            loop = asyncio.new_event_loop()
+            self._loop = loop
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._worker())
+            except Exception:
+                errlog.exception("メディア監視が落ちました。立て直します")
+            finally:
+                self._loop = None
+                self._drop_manager()
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+            if not self._stopping:
+                time.sleep(RESTART_DELAY)
+
+    async def _cycle(self) -> None:
+        """監視の 1 周。"""
+        if self._manager is None:
+            await self._open_manager()
+        await self._update()
 
     async def _worker(self) -> None:
         self._dirty = asyncio.Event()
-        try:
-            self._manager = await MediaManager.request_async()
-        except OSError:
-            self._publish(NowPlaying())
-            return
-
-        for adder in (
-            self._manager.add_sessions_changed,
-            self._manager.add_current_session_changed,
-        ):
-            handler = self._wake_threadsafe
-            self._manager_handlers.append(handler)
-            adder(handler)
-
+        cycle = None
         while not self._stopping:
-            try:
-                await self._update()
-            except OSError:
-                pass
+            if cycle is None or cycle.done():
+                cycle = asyncio.ensure_future(self._cycle())
+                cycle.add_done_callback(_discard)
+            # 1 周が返ってこないことも起こりうる。個々の呼び出しにも上限は
+            # 設けてあるが、どこか一箇所でも待ちっぱなしになると監視が止まり、
+            # 表示も操作も凍りつく。周回そのものにも網をかけ、返ってこない
+            # 周回は見捨てて先へ進む。
+            done, _pending = await asyncio.wait((cycle,), timeout=CYCLE_TIMEOUT)
+            if not done:
+                self._note_failure("1 周が返ってきません", trace=False)
+                if self._manager is None:  # 張り直しに入った
+                    cycle = None  # 詰まった周回は見捨てる
+            else:
+                try:
+                    cycle.result()
+                    self._failures = 0
+                except Exception:
+                    self._note_failure("監視でしくじりました")
             self._dirty.clear()
             # アートの読み直し中だけ間隔を詰める (遅れて届く分を早く拾う)
             wait = ART_POLL if time.monotonic() < self._art_deadline else self.TICK
@@ -278,19 +356,71 @@ class MediaController:
             except asyncio.TimeoutError:
                 pass
 
+    def _note_failure(
+        self, reason: str = "監視でしくじりました", trace: bool = True
+    ) -> None:
+        """周回でしくじったときの後始末。
+
+        ここで取りこぼすとワーカー スレッドごと死ぬ。そうなると表示は止まった
+        まま、ボタンも効かないまま二度と戻らない (実際にそうなった)。相手の
+        アプリは曲を切り替えるたびにセッションを作り直すので、閉じかけの
+        セッションを触って想定外の例外が飛んでくることがある。何が起きても
+        監視は続け、続けて転ぶようならセッションごと張り直す。
+        """
+        self._failures += 1
+        message = f"{reason} ({self._failures} 回目)"
+        if trace:
+            errlog.exception(message)
+        else:
+            errlog.write(message)
+        if self._failures >= RESET_AFTER:
+            self._failures = 0
+            errlog.write("セッションを張り直します")
+            self._drop_manager()
+
+    # -------------------------------------------------------------- 張り直し
+
+    async def _open_manager(self) -> None:
+        self._manager = await _call(MediaManager.request_async())
+        for adder, remover in (
+            (self._manager.add_sessions_changed, self._manager.remove_sessions_changed),
+            (
+                self._manager.add_current_session_changed,
+                self._manager.remove_current_session_changed,
+            ),
+        ):
+            handler = self._wake_threadsafe
+            self._manager_handlers.append(handler)
+            try:
+                self._manager_tokens.append((remover, adder(handler)))
+            except OSError:
+                pass
+
+    def _drop_manager(self) -> None:
+        """監視をいったん手放す。次の周回で取り直される。"""
+        self._detach_session()
+        tokens, self._manager_tokens = self._manager_tokens, []
+        self._manager_handlers.clear()
+        for remover, token in tokens:
+            try:
+                remover(token)
+            except Exception:
+                pass
+        self._manager = None
+        self._track_key = ""
+        self._thumbnail = None
+        self._art_deadline = 0.0
+
     # -------------------------------------------------------------- セッション選択
 
     def _pick_session(self):
         """監視対象のセッションと、選択できるセッション一覧を返す。"""
-        sessions = list(self._manager.get_sessions())
-        listing = tuple(
-            (s.source_app_user_model_id, friendly_app_name(s.source_app_user_model_id))
-            for s in sessions
-        )
+        sessions = [s for s in self._manager.get_sessions() if _app_id(s)]
+        listing = tuple((_app_id(s), friendly_app_name(_app_id(s))) for s in sessions)
 
         if self._preferred_app:
             for s in sessions:
-                if s.source_app_user_model_id == self._preferred_app:
+                if _app_id(s) == self._preferred_app:
                     return s, listing
 
         def is_playing(s) -> bool:
@@ -312,34 +442,35 @@ class MediaController:
     def _attach_session(self, session) -> None:
         self._detach_session()
         self._session = session
-        self._session_id = session.source_app_user_model_id if session else ""
         if session is None:
             return
-        for adder in (
-            session.add_media_properties_changed,
-            session.add_playback_info_changed,
-            session.add_timeline_properties_changed,
+        for adder, remover in (
+            (
+                session.add_media_properties_changed,
+                session.remove_media_properties_changed,
+            ),
+            (session.add_playback_info_changed, session.remove_playback_info_changed),
+            (
+                session.add_timeline_properties_changed,
+                session.remove_timeline_properties_changed,
+            ),
         ):
             handler = self._wake_threadsafe
             self._session_handlers.append(handler)
-            self._session_tokens.append((adder(handler), adder.__name__))
-
-    def _detach_session(self) -> None:
-        session, self._session = self._session, None
-        tokens, self._session_tokens = self._session_tokens, []
-        if session is None:
-            return
-        removers = {
-            "add_media_properties_changed": session.remove_media_properties_changed,
-            "add_playback_info_changed": session.remove_playback_info_changed,
-            "add_timeline_properties_changed": session.remove_timeline_properties_changed,
-        }
-        for token, adder_name in tokens:
             try:
-                removers[adder_name](token)
+                self._session_tokens.append((remover, adder(handler)))
             except OSError:
                 pass
+
+    def _detach_session(self) -> None:
+        self._session = None
+        tokens, self._session_tokens = self._session_tokens, []
         self._session_handlers.clear()
+        for remover, token in tokens:
+            try:
+                remover(token)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ 状態取得
 
@@ -348,11 +479,10 @@ class MediaController:
             return
 
         session, listing = self._pick_session()
-        if (
-            session is None
-            or self._session is None
-            or session.source_app_user_model_id != self._session_id
-        ):
+        # アプリ ID ではなくセッションそのものを見比べる。同じアプリでも曲を
+        # 変えるとセッションは作り直されるので、ID で見ていると閉じた方を
+        # 掴んだままになり、イベントも届かず、ボタンの操作も宛先を失う。
+        if session is None or self._session is None or session != self._session:
             self._attach_session(session)
 
         if session is None:
@@ -373,22 +503,17 @@ class MediaController:
         start = timeline.start_time.total_seconds()
         duration = max(0.0, timeline.end_time.total_seconds() - start)
         position = max(0.0, timeline.position.total_seconds() - start)
-        if status == "playing" and timeline.last_updated_time is not None:
-            elapsed = (
-                dt.datetime.now(dt.timezone.utc) - timeline.last_updated_time
-            ).total_seconds()
-            if 0 <= elapsed < 3600:
-                position += elapsed
+        if status == "playing":
+            position += self._elapsed_since(timeline.last_updated_time)
         if duration > 0:
             position = min(position, duration)
 
-        props = await session.try_get_media_properties_async()
-        title = props.title or ""
-        artist = props.artist or props.album_artist or ""
-        album = props.album_title or ""
-        track_key = " | ".join(
-            (session.source_app_user_model_id, title, artist, album)
-        )
+        props = await _call(session.try_get_media_properties_async())
+        title = (props.title or "") if props is not None else ""
+        artist = (props.artist or props.album_artist or "") if props is not None else ""
+        album = (props.album_title or "") if props is not None else ""
+        app_id = _app_id(session)
+        track_key = " | ".join((app_id, title, artist, album))
         if track_key != self._track_key:
             self._track_key = track_key
             self._thumbnail = await self._read_thumbnail(props)
@@ -404,7 +529,7 @@ class MediaController:
 
         self._publish(
             NowPlaying(
-                app_id=session.source_app_user_model_id,
+                app_id=app_id,
                 title=title,
                 artist=artist,
                 album=album,
@@ -423,17 +548,37 @@ class MediaController:
             )
         )
 
+    @staticmethod
+    def _elapsed_since(updated) -> float:
+        """タイムラインが最後に更新されてからの秒数。当てにならなければ 0。
+
+        last_updated_time の中身は相手のアプリ任せで、タイム ゾーン情報の無い
+        値や桁の壊れた値が来ることがある。素で引き算すると TypeError や
+        OverflowError になり、監視ごと道連れになるのでここで受け止める。
+        """
+        if updated is None or updated.tzinfo is None:
+            return 0.0
+        try:
+            elapsed = (dt.datetime.now(dt.timezone.utc) - updated).total_seconds()
+        except (TypeError, ValueError, OverflowError, OSError):
+            return 0.0
+        return elapsed if 0.0 <= elapsed < 3600.0 else 0.0
+
     async def _read_thumbnail(self, props) -> Optional[bytes]:
+        if props is None:
+            return None
         ref = props.thumbnail
         if ref is None:
             return None
         try:
-            stream = await ref.open_read_async()
+            stream = await _call(ref.open_read_async())
             size = int(stream.size)
             if size <= 0 or size > 32 * 1024 * 1024:
                 return None
             buffer = Buffer(size)
-            await stream.read_async(buffer, size, InputStreamOptions.READ_AHEAD)
+            await _call(
+                stream.read_async(buffer, size, InputStreamOptions.READ_AHEAD)
+            )
             return bytes(memoryview(buffer))
         except OSError:
             return None
