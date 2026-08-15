@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 APP_NAME = "MuuTask"
-APP_VERSION = "6"  # v1 から配布のたびに 1 ずつ上げる
+APP_VERSION = "7"  # v1 から配布のたびに 1 ずつ上げる
 
 
 def _config_path() -> Path:
@@ -73,6 +73,7 @@ class Config:
     bar_width: int = 340  # 96 DPI 基準の px
     bar_gap: int = 8  # 通知領域との間隔
     bar_bg: Optional[str] = None  # "#rrggbb" 固定したいとき (既定は自動判定)
+    popup_height: int = 180  # ホバーで出るアルバム アートの一辺 (96 DPI 基準の px)
 
     @classmethod
     def load(cls) -> "Config":

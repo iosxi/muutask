@@ -15,8 +15,10 @@ from typing import Callable, Optional
 
 from PIL import ImageTk
 
+import art_popup
 import icons
 import winapi
+from art_popup import ArtPopup
 from media_session import NowPlaying
 from uiutil import IconSet, TEXT_FAMILIES, luminance, mix, pick_font
 
@@ -110,6 +112,8 @@ class TaskbarBar:
             bg=self.colors["bg"],
         )
         self.canvas.pack()
+        self.popup = ArtPopup(root, config, scale)
+        self._popup_job = None
         self._bind()
         self._built_size: Optional[tuple[int, int]] = None
         self._anchor_used: Optional[str] = None
@@ -277,8 +281,9 @@ class TaskbarBar:
 
     def _bind(self) -> None:
         c = self.canvas
-        c.bind("<Motion>", lambda e: self._set_hover(self._hit(e.x, e.y)))
-        c.bind("<Leave>", lambda _e: self._set_hover(None))
+        c.bind("<Motion>", self._on_motion)
+        c.bind("<Enter>", lambda _e: self._arm_popup())
+        c.bind("<Leave>", self._on_leave)
         c.bind("<Button-1>", self._on_press)
         c.bind("<ButtonRelease-1>", self._on_release)
         c.bind("<Button-3>", lambda e: self.on_context_menu(e.x_root, e.y_root))
@@ -299,6 +304,41 @@ class TaskbarBar:
             "next": st.can_next,
             "play": st.can_play or st.can_pause,
         }.get(name, True)
+
+    def _on_motion(self, event) -> None:
+        self._set_hover(self._hit(event.x, event.y))
+        self._arm_popup()
+
+    def _on_leave(self, _event) -> None:
+        self._set_hover(None)
+        self._cancel_popup()
+        self.popup.hide()
+
+    # ------------------------------------------------- ホバーで出すアルバム アート
+
+    def _arm_popup(self) -> None:
+        """カーソルが乗っている間だけ、少し待ってから小窓を出す。"""
+        if self.popup.visible or self._popup_job is not None:
+            return
+        self._popup_job = self.root.after(art_popup.DELAY, self._open_popup)
+
+    def _cancel_popup(self) -> None:
+        if self._popup_job is not None:
+            try:
+                self.root.after_cancel(self._popup_job)
+            except tk.TclError:
+                pass
+            self._popup_job = None
+
+    def _open_popup(self) -> None:
+        self._popup_job = None
+        if not self.visible or self._geometry is None:
+            return
+        x, y, width, height = self._geometry
+        try:
+            self.popup.show(self.state, (x, y, width, height))
+        except tk.TclError:
+            pass
 
     def _set_hover(self, name: Optional[str]) -> None:
         if name == self._hover:
@@ -436,6 +476,8 @@ class TaskbarBar:
             self.win.withdraw()
             self.visible = False
             self._set_hover(None)
+            self._cancel_popup()
+            self.popup.hide()
 
     # ------------------------------------------------------------------ 描画
 
@@ -475,6 +517,13 @@ class TaskbarBar:
         )
         self._paint_buttons()
         self.update_progress()
+
+        # 出したまま曲が変わったら、小窓のアートも差し替える
+        if self.popup.visible and self._geometry is not None:
+            try:
+                self.popup.show(state, self._geometry)
+            except tk.TclError:
+                pass
 
     def _set_text(self, key: str, item, font, text: str) -> None:
         """文字を入れる。入りきらないときは流せるように 2 つ繋げて持たせる。
