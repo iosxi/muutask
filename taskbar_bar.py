@@ -318,7 +318,7 @@ class TaskbarBar:
         c.bind("<Leave>", self._on_leave)
         c.bind("<Button-1>", self._on_press)
         c.bind("<ButtonRelease-1>", self._on_release)
-        c.bind("<Button-3>", lambda e: self.on_context_menu(e.x_root, e.y_root))
+        c.bind("<Button-3>", self._on_right_click)
 
     # ------------------------------------------------------------------ 入力
 
@@ -348,9 +348,16 @@ class TaskbarBar:
 
     # ------------------------------------------------- ホバーで出すアルバム アート
 
+    def _menu_open(self) -> bool:
+        """右クリック メニューが開いているか (開いている間は Tk が掴んでいる)。"""
+        try:
+            return self.root.grab_current() is not None
+        except tk.TclError:
+            return False
+
     def _arm_popup(self) -> None:
         """カーソルが乗っている間だけ、少し待ってから小窓を出す。"""
-        if self.popup.visible or self._popup_job is not None:
+        if self.popup.visible or self._popup_job is not None or self._menu_open():
             return
         self._popup_job = self.root.after(art_popup.DELAY, self._open_popup)
 
@@ -362,9 +369,16 @@ class TaskbarBar:
                 pass
             self._popup_job = None
 
+    def _on_right_click(self, event) -> None:
+        # メニューを出す前に小窓を消す。小窓は最前面なので、残しておくと
+        # メニューに覆いかぶさってしまう
+        self._cancel_popup()
+        self.popup.hide()
+        self.on_context_menu(event.x_root, event.y_root)
+
     def _open_popup(self) -> None:
         self._popup_job = None
-        if not self.visible or self._geometry is None:
+        if not self.visible or self._geometry is None or self._menu_open():
             return
         x, y, width, height = self._geometry
         try:
