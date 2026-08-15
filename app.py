@@ -28,6 +28,11 @@ DRAIN_INTERVAL = 80  # ms
 TICK_INTERVAL = 250  # ms
 SYNC_INTERVAL = 250  # ms (タスクバーへの追従。長いと潜ったときの復帰が目立つ)
 SCROLL_INTERVAL = 40  # ms (文字送り。25 コマ/秒)
+#: 「自動」を表すメニュー用の値。
+#: Tk のメニューの radiobutton は -value が空文字だと**ラベル**を値として扱う
+#: ため、空文字のままだと変数と一致せずチェックが付かない (実測)。
+#: セッションの ID (AUMID) とぶつからない文字を使う。
+AUTO_SESSION = "\x00auto"
 TRIM_DELAY = 5_000  # ms (起動が落ち着いてから常駐量を削るまで)
 TRIM_INTERVAL = 600_000  # ms (以後の間引き)
 
@@ -161,11 +166,11 @@ class App:
 
         sources = tk.Menu(menu, tearoff=0)
         current = self.config.session
-        choice = tk.StringVar(master=self.root, value=current or "")
+        choice = tk.StringVar(master=self.root, value=current or AUTO_SESSION)
         self._menu_vars.append(choice)
         sources.add_radiobutton(
             label="自動 (再生中のアプリ)",
-            value="",
+            value=AUTO_SESSION,
             variable=choice,
             command=lambda: self._select_session(None),
         )
