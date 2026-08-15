@@ -83,6 +83,7 @@ class TaskbarBar:
         self._hover: Optional[str] = None
         self._pressed: Optional[str] = None
         self._hitboxes: dict[str, tuple[int, int, int, int]] = {}
+        self._bg_rows: Optional[list[str]] = None  # タスクバーの行ごとの色
         # 流れる文字まわり
         self._texts: dict[str, str] = {}
         self._periods: dict[str, int] = {}  # 0 なら流さない (収まっている)
@@ -155,8 +156,20 @@ class TaskbarBar:
         return colors
 
     def _sample_background(self, x: int, y: int, width: int, height: int) -> None:
-        """バーを置く場所のタスクバー色を拾って、地色を合わせる。"""
+        """バーを置く場所のタスクバー色を拾って、地色を合わせる。
+
+        一色ではなく行ごとに拾う。タスクバーは上端に細いハイライトが入って
+        いて、一色で塗るとそこだけ塗り潰されて浮いて見えるため。
+        """
+        self._bg_rows = None
         if self.config.bar_bg:
+            return
+        xs = [x + width * i // 6 for i in range(1, 6)]
+        rows = winapi.sample_rows(xs, y, height)
+        if rows:
+            self._bg_rows = rows
+            # 文字色は本体の色で決める (上端のハイライトに引きずられないように)
+            self.colors = self._colors(rows[len(rows) // 2])
             return
         cy = y + height // 2
         points = [(x + width * i // 6, cy) for i in range(1, 6)]
@@ -164,6 +177,23 @@ class TaskbarBar:
         color = winapi.sample_color(points)
         if color:
             self.colors = self._colors(color)
+
+    def _paint_rows(self, x0: int, x1: int, height: int) -> None:
+        """タスクバーの行ごとの色をそのまま描き写す。
+
+        これで上端のハイライトがバーの上でも続き、透けているように見える。
+        拾えなかったとき (bar_bg 指定時など) は一色で塗る。
+        """
+        rows = self._bg_rows
+        if not rows:
+            self.canvas.create_rectangle(
+                x0, 0, x1, height, fill=self.colors["bg"], width=0
+            )
+            return
+        for y in range(height):
+            self.canvas.create_line(
+                x0, y, x1, y, fill=rows[min(y, len(rows) - 1)], width=1
+            )
 
     # ------------------------------------------------------------------ 組み立て
 
@@ -173,6 +203,7 @@ class TaskbarBar:
         c.delete("all")
         c.configure(width=width, height=height, bg=self.colors["bg"])
         self.win.configure(bg=self.colors["bg"])
+        self._paint_rows(0, width, height)  # いちばん奥に地色を敷く
 
         pad = max(4, round(height * 0.12))
         art = height - pad * 2
@@ -214,8 +245,9 @@ class TaskbarBar:
             font=self.f_artist, fill=self.colors["artist"],
         )
 
-        # 2. アルバム アートの領域を隠す覆い (流れてきた文字をここで消す)
-        c.create_rectangle(0, 0, text_x - 1, height, fill=self.colors["bg"], width=0)
+        # 2. アルバム アートの領域を隠す覆い (流れてきた文字をここで消す)。
+        #    ここも行ごとに塗らないと、この幅だけハイライトが途切れる
+        self._paint_rows(0, text_x - 1, height)
         self.art_item = c.create_image(pad, pad, anchor="nw")
 
         # 3. シーク バーはタイトルとアーティストの間。ボタンの手前で止める
@@ -489,10 +521,9 @@ class TaskbarBar:
 
         has_media = state.has_media and bool(state.title or state.artist)
         title = state.title if has_media else EMPTY_TITLE
+        # アプリ名は入れない (長くなるぶん無駄に流れる)。トレイのツールチップには出る
         artist = (
-            " · ".join(x for x in (state.artist, state.album, state.app_name) if x)
-            if has_media
-            else ""
+            " · ".join(x for x in (state.artist, state.album) if x) if has_media else ""
         )
         self._set_text("title", self.title_item, self.f_title, title)
         self._set_text("artist", self.artist_item, self.f_artist, artist)

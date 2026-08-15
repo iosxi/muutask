@@ -202,6 +202,38 @@ def foreground_is_fullscreen() -> bool:
     )
 
 
+def sample_rows(xs: list[int], y: int, height: int) -> Optional[list[str]]:
+    """指定した x を縦になぞって、行ごとの色を返す。
+
+    Windows 11 のタスクバーは**上端の 1 行だけ明るい** (実測で #434346 対
+    本体 #212126)。一色で塗りつぶすとこの筋が消えてしまうので、行ごとの色を
+    読んでそのまま描き写せるようにする。
+    """
+    dc = user32.GetDC(None)
+    if not dc:
+        return None
+    rows: list[str] = []
+    try:
+        for row in range(height):
+            counts: dict[str, int] = {}
+            for x in xs:
+                value = gdi32.GetPixel(dc, int(x), int(y + row))
+                if value == 0xFFFFFFFF:  # CLR_INVALID
+                    continue
+                color = "#%02x%02x%02x" % (
+                    value & 0xFF,
+                    (value >> 8) & 0xFF,
+                    (value >> 16) & 0xFF,
+                )
+                counts[color] = counts.get(color, 0) + 1
+            if not counts:
+                return None
+            rows.append(max(counts.items(), key=lambda item: item[1])[0])
+    finally:
+        user32.ReleaseDC(None, dc)
+    return rows
+
+
 def sample_color(points: list[tuple[int, int]]) -> Optional[str]:
     """画面上の複数点の色を調べ、いちばん多い色を #rrggbb で返す。"""
     dc = user32.GetDC(None)
