@@ -4,8 +4,12 @@
 # 出来上がるもの:
 #   dist\MuuTask.exe              単体で動く実行ファイル
 #   dist\MuuTask-<版>.zip         配布用 (MuuTask.exe + README.txt)
+#
+# 古い zip は新しい方から KEEP_ZIPS 個だけ残し、それより古いものは消す。
 
 $ErrorActionPreference = 'Stop'
+#: dist に残しておく配布物の数。1 つ前の版に戻れる余地は持たせておく
+$KEEP_ZIPS = 3
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $python = Join-Path $root '.venv\Scripts\python.exe'
 
@@ -87,6 +91,15 @@ $readme = $readme -replace '@VERSION@', $version.TrimStart('v')
 $zip = Join-Path $dist "MuuTask-$version.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path $stage -DestinationPath $zip
+
+# 古い配布物は溜め込まない。名前順だと v10 が v9 より前に来てしまうので、
+# 作られた順で見る
+$stale = Get-ChildItem -Path $dist -Filter 'MuuTask-v*.zip' |
+    Sort-Object LastWriteTime -Descending | Select-Object -Skip $KEEP_ZIPS
+foreach ($file in $stale) {
+    Write-Host "古い配布物を消します: $($file.Name)"
+    Remove-Item -Force $file.FullName
+}
 
 Write-Host ''
 Write-Host "完了しました:"
