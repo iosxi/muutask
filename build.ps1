@@ -20,6 +20,13 @@ if (-not $?) {
     & $python -m pip install pyinstaller
 }
 
+# 動いている exe は上書きできず、PyInstaller が WinError 5 で止まる。先に
+# 気づかないと、古い exe が新しい版番号の zip に入ってしまう
+$running = Get-Process -Name MuuTask -ErrorAction SilentlyContinue
+if ($running) {
+    throw "MuuTask が起動中です (PID $($running.Id -join ', '))。終了してからビルドしてください。"
+}
+
 # 版番号は config.py の APP_VERSION を唯一の出どころにする (v1 から 1 ずつ)
 $version = 'v' + (& $python -c 'import config; print(config.APP_VERSION)')
 Write-Host "MuuTask $version をビルドします"
@@ -43,6 +50,7 @@ $excludeArgs = $excludes | ForEach-Object { '--exclude-module'; $_ }
 
 $dist = Join-Path $root 'dist'
 $work = Join-Path $root 'build'
+$started = Get-Date
 & $python -m PyInstaller `
     --noconfirm --clean `
     --onefile --windowed `
@@ -53,8 +61,16 @@ $work = Join-Path $root 'build'
     --distpath $dist --workpath $work --specpath $work `
     (Join-Path $root 'app.py')
 
+# $ErrorActionPreference は exe の失敗までは止めてくれないので、自分で見る
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller が失敗しました (終了コード $LASTEXITCODE)。" }
+
 $exe = Join-Path $dist 'MuuTask.exe'
 if (-not (Test-Path $exe)) { throw 'exe が生成されませんでした。' }
+# 前回の exe が残っているだけ、という取り違えを防ぐ。ここを見ていないと
+# 古いバイナリを新しい版番号で配ってしまう
+if ((Get-Item $exe).LastWriteTime -lt $started) {
+    throw "exe が更新されていません。前回のものが残っています: $exe"
+}
 
 # zip の中は MuuTask-<版>\ の 1 階層にまとめる (展開時に散らからないように)
 $stage = Join-Path $work "package\MuuTask-$version"
