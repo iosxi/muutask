@@ -5,9 +5,20 @@ from __future__ import annotations
 import io
 from typing import Optional
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 SUPERSAMPLE = 4
+
+#: この倍率より大きく引き伸ばすときは、輪郭を締め直す。Chrome 経由のアート
+#: は 120x120 しか来ないことがあり、大きな小窓ではそのままだとぼやける
+UPSCALE_SHARPEN_FROM = 1.15
+#: 締め直しの半径。元の 1 画素ぶんの半分あたりに置くと、輪郭だけに効く
+SHARPEN_RADIUS_RATIO = 0.5
+#: 半径の下限と上限 (px)。効かなすぎ・輪郭が浮きすぎるのを防ぐ
+SHARPEN_RADIUS_RANGE = (0.8, 3.0)
+#: 締め直しの強さ (%) と、無視する差 (0-255)。閾値を置くと平らな面が荒れない
+SHARPEN_PERCENT = 110
+SHARPEN_THRESHOLD = 2
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
@@ -59,6 +70,23 @@ def note_icon(size: int, fg: str, bg: Optional[str] = None, radius: int = 6) -> 
     return canvas.resize((size, size), Image.LANCZOS)
 
 
+def _sharpen_upscale(image: Image.Image, source_side: int) -> Image.Image:
+    """引き伸ばした画像の輪郭を締め直す。等倍以下ならそのまま返す。
+
+    無い解像度は戻らないが、輪郭がぼやけた感じはかなり収まる。
+    """
+    factor = image.size[0] / source_side if source_side else 1.0
+    if factor < UPSCALE_SHARPEN_FROM:
+        return image
+    low, high = SHARPEN_RADIUS_RANGE
+    radius = min(high, max(low, factor * SHARPEN_RADIUS_RATIO))
+    return image.filter(
+        ImageFilter.UnsharpMask(
+            radius=radius, percent=SHARPEN_PERCENT, threshold=SHARPEN_THRESHOLD
+        )
+    )
+
+
 def album_art(data: Optional[bytes], size: int, radius: int, fg: str, bg: str) -> Image.Image:
     """アルバム アート画像。取得できなければ音符アイコンを返す。"""
     if data:
@@ -77,7 +105,7 @@ def album_art(data: Optional[bytes], size: int, radius: int, fg: str, bg: str) -
                     (height - side) // 2 + side,
                 )
             ).resize((size, size), Image.LANCZOS)
-            return rounded(image, radius)
+            return rounded(_sharpen_upscale(image, side), radius)
         except (OSError, ValueError):
             pass
     return note_icon(size, fg, bg, radius)
