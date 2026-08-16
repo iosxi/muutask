@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import io
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import winrt.runtime
+from PIL import Image
 from winrt.windows.media.control import (
     GlobalSystemMediaTransportControlsSessionManager as MediaManager,
 )
@@ -35,6 +37,11 @@ TICKS_PER_SECOND = 10_000_000
 ART_RETRY_WINDOW = 8.0
 #: その間の読み直し間隔 (秒)。遅れて届くアートを早く拾うため短くする
 ART_POLL = 0.3
+#: 絵柄を見比べるときの一辺 (px)。大きさの違いを均すために縮めてから比べる
+ART_PRINT_SIZE = 16
+#: 「同じ絵」と見なす、画素値の平均差の上限 (0-255)。取り違えると前の曲の
+#: アートを出したままになるので、ほぼ同一のときだけ通す狭さにしておく
+ART_SAME_LIMIT = 6.0
 
 #: WinRT の非同期呼び出しを待つ上限 (秒)。相手のアプリが応答しなくなっても
 #: ここで見切りをつけて、監視を続けられるようにする
@@ -82,6 +89,42 @@ def friendly_app_name(app_id: str) -> str:
     # 区切りの "." が末尾に残ると、この後の split で空になってしまう
     name = name.rstrip(".")
     return name.split(".")[-1] or app_id
+
+
+def _art_pixels(data: Optional[bytes]) -> int:
+    """アルバム アートの画素数。読めなければ 0。
+
+    ヘッダだけ見れば大きさは分かるので、画像本体は展開しない。
+    """
+    if not data:
+        return 0
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            return image.size[0] * image.size[1]
+    except (OSError, ValueError):
+        return 0
+
+
+def _art_print(data: Optional[bytes]) -> Optional[bytes]:
+    """絵柄の指紋。大きさが違っても、同じ絵なら近い値になる。"""
+    if not data:
+        return None
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            small = image.convert("RGB").resize(
+                (ART_PRINT_SIZE, ART_PRINT_SIZE), Image.LANCZOS
+            )
+        return small.tobytes()
+    except (OSError, ValueError):
+        return None
+
+
+def _same_picture(a: Optional[bytes], b: Optional[bytes]) -> bool:
+    """2 つの指紋が同じ絵か。片方でも読めなければ「違う」とする。"""
+    if a is None or b is None or len(a) != len(b):
+        return False
+    diff = sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+    return diff <= ART_SAME_LIMIT
 
 
 class _Stalled(Exception):
@@ -198,6 +241,8 @@ class MediaController:
         self._track_key = ""
         self._thumbnail: Optional[bytes] = None
         self._art_deadline = 0.0  # この時刻まではアルバム アートを読み直す
+        self._art_pixels = 0  # いま持っているアートの画素数
+        self._art_print: Optional[bytes] = None  # その絵柄の指紋
         self._failures = 0  # 続けてしくじった回数
         self._dirty: Optional[asyncio.Event] = None
         self._state = NowPlaying()
@@ -408,8 +453,7 @@ class MediaController:
                 pass
         self._manager = None
         self._track_key = ""
-        self._thumbnail = None
-        self._art_deadline = 0.0
+        self._forget_art()
 
     # -------------------------------------------------------------- セッション選択
 
@@ -487,8 +531,7 @@ class MediaController:
 
         if session is None:
             self._track_key = ""
-            self._thumbnail = None
-            self._art_deadline = 0.0
+            self._forget_art()
             self._publish(NowPlaying(sessions=listing))
             return
 
@@ -515,17 +558,13 @@ class MediaController:
         app_id = _app_id(session)
         track_key = " | ".join((app_id, title, artist, album))
         if track_key != self._track_key:
+            # 曲が変わった。アートはすぐには追いついてこないので、しばらく
+            # 読み直す。実測では 0.1〜0.5 秒ほど遅れて本来の画像が届く
             self._track_key = track_key
-            self._thumbnail = await self._read_thumbnail(props)
             self._art_deadline = time.monotonic() + ART_RETRY_WINDOW
+            await self._refresh_art(props, fresh=True)
         elif time.monotonic() < self._art_deadline:
-            # 曲名が変わった時点では、アートがまだ前の曲のまま (あるいは
-            # 途中の別画像) のことがある。実測では 0.5 秒ほど遅れて本来の
-            # 画像に差し替わる。1 回しか読まないと、そのズレたまま固定されて
-            # しまうので、しばらく読み直して新しくなっていれば拾い直す。
-            latest = await self._read_thumbnail(props)
-            if latest is not None and latest != self._thumbnail:
-                self._thumbnail = latest
+            await self._refresh_art(props, fresh=False)
 
         self._publish(
             NowPlaying(
@@ -547,6 +586,41 @@ class MediaController:
                 sessions=listing,
             )
         )
+
+    async def _refresh_art(self, props, fresh: bool) -> None:
+        """アルバム アートを読み直し、良くなるときだけ差し替える。
+
+        同じ絵が 256x256 → 150x150 → 120x120 と、だんだん粗くなりながら
+        届くアプリがある。届いた順に採ると、小窓のアートが一瞬だけキレイで
+        すぐぼやけ、読み直しの時間が過ぎるとその粗いままで固定されてしまう。
+        そこで、いま持っているものと同じ絵で、かつ小さいものは見送る。
+        絵柄そのものが変わったときは、小さくなっていても素直に差し替える
+        (見送ると前の曲のアートを出し続けることになってしまう)。
+        """
+        latest = await self._read_thumbnail(props)
+        if latest is None:
+            if fresh:  # アートの無い曲に変わった
+                self._thumbnail = None
+                self._art_pixels = 0
+                self._art_print = None
+            return
+        if latest == self._thumbnail:
+            return
+
+        pixels = _art_pixels(latest)
+        fingerprint = _art_print(latest)
+        if pixels < self._art_pixels and _same_picture(fingerprint, self._art_print):
+            return
+        self._thumbnail = latest
+        self._art_pixels = pixels
+        self._art_print = fingerprint
+
+    def _forget_art(self) -> None:
+        """アルバム アートの持ち物を捨てる。次の曲でまっさらから拾い直す。"""
+        self._thumbnail = None
+        self._art_deadline = 0.0
+        self._art_pixels = 0
+        self._art_print = None
 
     @staticmethod
     def _elapsed_since(updated) -> float:
