@@ -239,6 +239,8 @@ class MediaController:
 
         self._preferred_app: Optional[str] = None  # ユーザーが固定したセッション
         self._track_key = ""
+        # 直近の確かなタイムライン (track_key, 長さ, 位置, time.monotonic())
+        self._timeline: Optional[tuple[str, float, float, float]] = None
         self._thumbnail: Optional[bytes] = None
         self._art_deadline = 0.0  # この時刻まではアルバム アートを読み直す
         self._art_pixels = 0  # いま持っているアートの画素数
@@ -453,6 +455,7 @@ class MediaController:
                 pass
         self._manager = None
         self._track_key = ""
+        self._timeline = None
         self._forget_art()
 
     # -------------------------------------------------------------- セッション選択
@@ -531,6 +534,7 @@ class MediaController:
 
         if session is None:
             self._track_key = ""
+            self._timeline = None
             self._forget_art()
             self._publish(NowPlaying(sessions=listing))
             return
@@ -566,6 +570,10 @@ class MediaController:
         elif time.monotonic() < self._art_deadline:
             await self._refresh_art(props, fresh=False)
 
+        duration, position = self._steady_timeline(
+            track_key, status, duration, position
+        )
+
         self._publish(
             NowPlaying(
                 app_id=app_id,
@@ -586,6 +594,43 @@ class MediaController:
                 sessions=listing,
             )
         )
+
+    def _steady_timeline(
+        self, track_key: str, status: str, duration: float, position: float
+    ) -> tuple[float, float]:
+        """空っぽのタイムラインで、いままでの再生位置を消さないようにする。
+
+        Firefox は Google からログアウトした状態の YouTube / YouTube Music で
+        シークすると、再生を続けたまま「長さも位置も 0」のタイムラインを
+        送ってくる (実測。しかも last_updated_time だけは今の時刻で更新される
+        ので、古い報せとして見分けることもできない)。素直に受け取ると曲の
+        途中なのにバーが頭に戻り、一時停止して再生し直すまで戻らない。
+
+        長さの分かっている曲でそれが来たら、届かなかったものと見なして直前の
+        値を進め続ける。空で塗り潰される 0.25 秒前に正しい位置が 1 度だけ届く
+        (タイムラインの変更通知で起こされるので、たいていは拾える) ので、
+        ふつうはシークした先から数え直せる。その 1 度を取りこぼしても、頭に
+        戻って固まることはなく、次のまともな報せ (一時停止・再生や曲の
+        変わり目) で正しい位置に戻る。
+
+        長さの分からない曲 (ライブ配信など) は元から 0 なので、そのまま通す。
+        """
+        now = time.monotonic()
+        if duration > 0:
+            self._timeline = (track_key, duration, position, now)
+            return duration, position
+
+        held = self._timeline
+        if held is None or held[0] != track_key:
+            self._timeline = None
+            return duration, position
+
+        _key, held_duration, held_position, held_at = held
+        if status == "playing":
+            held_position += max(0.0, now - held_at)
+        held_position = min(held_position, held_duration)
+        self._timeline = (track_key, held_duration, held_position, now)
+        return held_duration, held_position
 
     async def _refresh_art(self, props, fresh: bool) -> None:
         """アルバム アートを読み直し、良くなるときだけ差し替える。
