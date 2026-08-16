@@ -51,6 +51,8 @@ WINRT_TIMEOUT = 5.0
 CYCLE_TIMEOUT = 20.0
 #: 続けてこの回数しくじったら、セッションを張り直す
 RESET_AFTER = 3
+#: 続けてこの回数、再生情報を読めなかったらセッションを張り直す
+UNREADABLE_LIMIT = 5
 #: ワーカーごと落ちたときに、立て直すまで置く間隔 (秒)
 RESTART_DELAY = 1.0
 
@@ -246,6 +248,7 @@ class MediaController:
         self._art_pixels = 0  # いま持っているアートの画素数
         self._art_print: Optional[bytes] = None  # その絵柄の指紋
         self._failures = 0  # 続けてしくじった回数
+        self._unreadable = 0  # 続けて再生情報を読めなかった回数
         self._dirty: Optional[asyncio.Event] = None
         self._state = NowPlaying()
 
@@ -403,6 +406,25 @@ class MediaController:
             except asyncio.TimeoutError:
                 pass
 
+    def _skip_unreadable(self) -> None:
+        """再生情報を読めなかった周回を、静かに飛ばす。
+
+        閉じかけのセッションでは `get_playback_info()` が None を返してくる
+        (実測。v13 のログには 1 日で 5 回残っていた)。例外にして周回ごと
+        転ばせると、3 回続いたときにセッションを張り直すことになり、そのとき
+        アルバム アートも覚えている再生位置も捨ててしまう。捨てた直後に
+        Firefox の空タイムラインが来ると、せっかく直したバーがまた頭に戻る。
+
+        読めないだけなら、その周回を飛ばして次に賭ければよい。表示は 1 秒
+        ぶん古いままになるだけで、誰も困らない。ただし死んだセッションを
+        掴んだまま二度と読めない目もあるので、続くようなら張り直す。
+        """
+        self._unreadable += 1
+        if self._unreadable >= UNREADABLE_LIMIT:
+            self._unreadable = 0
+            errlog.write("再生情報を読めません。セッションを張り直します")
+            self._drop_manager()
+
     def _note_failure(
         self, reason: str = "監視でしくじりました", trace: bool = True
     ) -> None:
@@ -456,6 +478,7 @@ class MediaController:
         self._manager = None
         self._track_key = ""
         self._timeline = None
+        self._unreadable = 0
         self._forget_art()
 
     # -------------------------------------------------------------- セッション選択
@@ -472,9 +495,11 @@ class MediaController:
 
         def is_playing(s) -> bool:
             try:
-                return s.get_playback_info().playback_status == PlaybackStatus.PLAYING
+                info = s.get_playback_info()
             except OSError:
                 return False
+            # 閉じかけのセッションは None を返してくる (実測)
+            return info is not None and info.playback_status == PlaybackStatus.PLAYING
 
         current = self._manager.get_current_session()
         if current is not None and is_playing(current):
@@ -540,20 +565,28 @@ class MediaController:
             return
 
         info = session.get_playback_info()
+        if info is None:
+            self._skip_unreadable()
+            return
+        self._unreadable = 0
         status = {
             PlaybackStatus.PLAYING: "playing",
             PlaybackStatus.PAUSED: "paused",
         }.get(info.playback_status, "stopped")
         controls = info.controls
 
+        duration = position = 0.0
         timeline = session.get_timeline_properties()
-        start = timeline.start_time.total_seconds()
-        duration = max(0.0, timeline.end_time.total_seconds() - start)
-        position = max(0.0, timeline.position.total_seconds() - start)
-        if status == "playing":
-            position += self._elapsed_since(timeline.last_updated_time)
-        if duration > 0:
-            position = min(position, duration)
+        # ここも None が返ることがある。長さも位置も分からないだけなので 0 の
+        # まま先へ進め、_steady_timeline に直前の値を継がせる
+        if timeline is not None:
+            start = timeline.start_time.total_seconds()
+            duration = max(0.0, timeline.end_time.total_seconds() - start)
+            position = max(0.0, timeline.position.total_seconds() - start)
+            if status == "playing":
+                position += self._elapsed_since(timeline.last_updated_time)
+            if duration > 0:
+                position = min(position, duration)
 
         props = await _call(session.try_get_media_properties_async())
         title = (props.title or "") if props is not None else ""

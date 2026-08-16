@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 APP_NAME = "MuuTask"
-APP_VERSION = "13"  # v1 から配布のたびに 1 ずつ上げる
+APP_VERSION = "14"  # v1 から配布のたびに 1 ずつ上げる
 
 
 def _config_path() -> Path:
