@@ -39,9 +39,10 @@ class ArtPopup:
 
         self._image = None  # ImageTk への参照を保持する
         self._key: Optional[str] = None
-        self._size = 0
+        self._box = 0  # 長辺の上限 (DPI をかけたあとの px)
+        self._size = (0, 0)  # いまの小窓の大きさ
         self._hwnd = 0
-        self._rounded = False
+        self._rounded = (0, 0)  # 角を丸めたときの大きさ
 
         self.palette = theme.Palette.current()
         self.win = tk.Toplevel(root)
@@ -57,8 +58,13 @@ class ArtPopup:
 
     # ------------------------------------------------------------------ 大きさ
 
-    def _side(self) -> int:
-        """小窓の一辺 (正方形)。アルバム アートが正方形なので縦横を揃える。"""
+    def _limit(self) -> int:
+        """小窓に収める長辺の上限。
+
+        アートは正方形とは限らない (YouTube の動画では 16:9 が来る) ので、
+        popup_height は「一辺」ではなく「長辺の上限」として扱う。こうすると
+        設定した大きさを超えずに、絵の全体が入る。
+        """
         height = self.config.popup_height or DEFAULT_HEIGHT
         return max(80, round(height * self.scale))
 
@@ -66,30 +72,32 @@ class ArtPopup:
 
     def show(self, state, bar_rect: tuple[int, int, int, int]) -> None:
         """バーの真上に出す。bar_rect は (x, y, 幅, 高さ)。"""
-        side = self._side()
+        box = self._limit()
         pad = max(4, round(PAD * self.scale))
-        art = side - pad * 2
+        art = box - pad * 2
 
         key = f"{state.art_key}|{art}"
-        if key != self._key or self._size != side:
-            self._key, self._size = key, side
+        if key != self._key or self._box != box:
+            self._key, self._box = key, box
             image = icons.album_art(
                 state.thumbnail, art, max(4, art // 16),
-                self.palette.muted, self.palette.track,
+                self.palette.muted, self.palette.track, keep_aspect=True,
             )
             self._image = ImageTk.PhotoImage(icons.flatten(image, self.palette.card))
-            self.canvas.configure(width=side, height=side)
+            self._size = (image.width + pad * 2, image.height + pad * 2)
+            self.canvas.configure(width=self._size[0], height=self._size[1])
             self.canvas.coords(self._item, pad, pad)
             self.canvas.itemconfigure(self._item, image=self._image)
 
-        x, y, width, _height = bar_rect
+        win_w, win_h = self._size
+        x, y, bar_width, _bar_height = bar_rect
         taskbar = winapi.taskbar_rect()
         top = taskbar[1] if taskbar else y
         gap = max(2, round(GAP * self.scale))
 
-        left = x + width // 2 - side // 2
-        left = max(0, min(left, self.win.winfo_screenwidth() - side))
-        self.win.geometry(f"{side}x{side}+{left}+{top - gap - side}")
+        left = x + bar_width // 2 - win_w // 2
+        left = max(0, min(left, self.win.winfo_screenwidth() - win_w))
+        self.win.geometry(f"{win_w}x{win_h}+{left}+{top - gap - win_h}")
 
         if not self.visible:
             self.win.deiconify()
@@ -99,11 +107,12 @@ class ArtPopup:
                 self._hwnd = winapi.toplevel_hwnd(self.win.winfo_id())
                 # クリックしても前に出ないように。バーと同じ扱いにする
                 winapi.make_tool_window(self._hwnd)
-            if not self._rounded:
-                theme.round_window_corners(
-                    self._hwnd, side, side, max(4, round(8 * self.scale))
-                )
-                self._rounded = True
+        # 絵の形が変わると小窓の大きさも変わる。角はそのたびに丸め直す
+        if self._hwnd and self._rounded != self._size:
+            theme.round_window_corners(
+                self._hwnd, win_w, win_h, max(4, round(8 * self.scale))
+            )
+            self._rounded = self._size
         winapi.raise_to_top(self._hwnd)
 
     def hide(self) -> None:

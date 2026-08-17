@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageStat
 
 SUPERSAMPLE = 4
 
@@ -25,6 +25,13 @@ SHARPEN_THRESHOLD = 2
 #: 輪郭の鋭さを保ったまま消せる
 CHROMA_BLUR_RATIO = 0.3
 CHROMA_BLUR_RANGE = (0.5, 1.2)
+
+#: 縁の帯を落とすときの、その一列の「平ら」さ (画素値のばらつきの上限)
+PAD_FLATNESS = 3.0
+#: 角の色とどれだけ近ければ帯と見なすか (0-255)
+PAD_NEARNESS = 6
+#: 片側で落とせる割合の上限。絵そのものを食べないための歯止め
+PAD_MAX_TRIM = 0.30
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
@@ -76,6 +83,59 @@ def note_icon(size: int, fg: str, bg: Optional[str] = None, radius: int = 6) -> 
     return canvas.resize((size, size), Image.LANCZOS)
 
 
+def _trim_padding(image: Image.Image) -> Image.Image:
+    """縁の帯を落とす。
+
+    YouTube Music は 4:3 のジャケットを正方形のキャンバスに置いて渡してくる
+    ことがある (実測では (18,18,18) の帯で埋めてあった)。帯を含めたまま扱うと、
+    小窓の中でジャケットが小さくなり、上下に地色でない黒が残る。
+
+    角の色と同じで、かつ平らな列を外側から落とす。絵そのものが縁まで一色の
+    ときに食べ過ぎないよう、片側 30% で打ち切る。
+    """
+    width, height = image.size
+    corner = image.getpixel((0, 0))
+
+    def is_pad(box) -> bool:
+        stat = ImageStat.Stat(image.crop(box))
+        return max(stat.stddev) <= PAD_FLATNESS and all(
+            abs(stat.mean[i] - corner[i]) <= PAD_NEARNESS for i in range(3)
+        )
+
+    top = bottom = left = right = 0
+    while top < height * PAD_MAX_TRIM and is_pad((0, top, width, top + 1)):
+        top += 1
+    while bottom < height * PAD_MAX_TRIM and is_pad(
+        (0, height - 1 - bottom, width, height - bottom)
+    ):
+        bottom += 1
+    while left < width * PAD_MAX_TRIM and is_pad((left, 0, left + 1, height)):
+        left += 1
+    while right < width * PAD_MAX_TRIM and is_pad(
+        (width - 1 - right, 0, width - right, height)
+    ):
+        right += 1
+    if not (top or bottom or left or right):
+        return image
+    return image.crop((left, top, width - right, height - bottom))
+
+
+def _fit(size: tuple[int, int], box: int) -> tuple[int, int]:
+    """長辺が box に収まる大きさ。縦横の比はそのまま。"""
+    width, height = size
+    if width >= height:
+        return box, max(1, round(box * height / width))
+    return max(1, round(box * width / height)), box
+
+
+def _center_square(image: Image.Image) -> Image.Image:
+    """中央を正方形に切り出す。"""
+    width, height = image.size
+    side = min(width, height)
+    x, y = (width - side) // 2, (height - side) // 2
+    return image.crop((x, y, x + side, y + side))
+
+
 def _clean_chroma(image: Image.Image, factor: float) -> Image.Image:
     """色ノイズをならす。引き伸ばす前の、小さいうちにかける。
 
@@ -107,29 +167,34 @@ def _sharpen_luma(image: Image.Image, factor: float) -> Image.Image:
     return Image.merge("YCbCr", (y, cb, cr)).convert("RGB")
 
 
-def album_art(data: Optional[bytes], size: int, radius: int, fg: str, bg: str) -> Image.Image:
-    """アルバム アート画像。取得できなければ音符アイコンを返す。"""
+def album_art(
+    data: Optional[bytes],
+    size: int,
+    radius: int,
+    fg: str,
+    bg: str,
+    keep_aspect: bool = False,
+) -> Image.Image:
+    """アルバム アート画像。取得できなければ音符アイコンを返す。
+
+    もらえる絵は正方形とは限らない。YouTube の動画では 150x83 (16:9) が
+    そのまま来る (実測)。keep_aspect を立てると縦横の比を保ったまま、長辺が
+    size に収まる大きさで返す。立てないときは中央を正方形に切り出す
+    (バーの小さな枠やトレイ アイコンのように、正方形しか置けない場所用)。
+    """
     if data:
         try:
             image = Image.open(io.BytesIO(data))
             image.load()
-            image = image.convert("RGB")
-            # 中央を正方形に切り出す
-            width, height = image.size
-            side = min(width, height)
-            image = image.crop(
-                (
-                    (width - side) // 2,
-                    (height - side) // 2,
-                    (width - side) // 2 + side,
-                    (height - side) // 2 + side,
-                )
-            )
-            factor = size / side if side else 1.0
+            image = _trim_padding(image.convert("RGB"))
+            if not keep_aspect:
+                image = _center_square(image)
+            target = _fit(image.size, size)
+            factor = target[0] / image.size[0]
             enlarging = factor >= UPSCALE_SHARPEN_FROM
             if enlarging:
                 image = _clean_chroma(image, factor)
-            image = image.resize((size, size), Image.LANCZOS)
+            image = image.resize(target, Image.LANCZOS)
             if enlarging:
                 image = _sharpen_luma(image, factor)
             return rounded(image, radius)
