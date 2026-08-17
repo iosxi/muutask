@@ -39,9 +39,18 @@ ART_RETRY_WINDOW = 8.0
 ART_POLL = 0.3
 #: 絵柄を見比べるときの一辺 (px)。大きさの違いを均すために縮めてから比べる
 ART_PRINT_SIZE = 16
-#: 「同じ絵」と見なす、画素値の平均差の上限 (0-255)。取り違えると前の曲の
-#: アートを出したままになるので、ほぼ同一のときだけ通す狭さにしておく
-ART_SAME_LIMIT = 6.0
+#: 「同じ絵」と見なす、画素値の平均差の上限 (0-255)。
+#:
+#: 同じ絵が 150x150 → 120x120 と縮んで届くとき、縮んだ方は JPEG の畳み直しで
+#: 崩れているので、指紋どうしでも差が出る。実測では、写真のようなアートで
+#: 0.30、細い線が斜めに走るアートで 6.64 だった。一方、別の絵どうしは 49.9 が
+#: 最小で、たいてい 100 を超える。6.0 では線の細いアートを「別の絵」と取り
+#: 違えて、粗い方に差し替えてしまっていた。
+#:
+#: 取り違えても害が小さいのは「同じ」と見た側 (いま持っている大きい方を使い
+#: 続けるだけ)。「別」と見た側は前の曲のアートを出し続けることになる。両者の
+#: 間が十分に空いているので、実測のいちばん悪い値の 3 倍あたりに置く
+ART_SAME_LIMIT = 20.0
 
 #: WinRT の非同期呼び出しを待つ上限 (秒)。相手のアプリが応答しなくなっても
 #: ここで見切りをつけて、監視を続けられるようにする
@@ -594,13 +603,21 @@ class MediaController:
         album = (props.album_title or "") if props is not None else ""
         app_id = _app_id(session)
         track_key = " | ".join((app_id, title, artist, album))
+        # 曲名も演者も盤名も無い、名無しの間はアートを受け取らない。曲を切り
+        # 替えるとき、ブラウザーは次の曲の名前が決まるまでの 1 秒足らずの間、
+        # 自分のアプリ アイコンをアートとして渡してくる (実測。Chrome の
+        # YouTube Music では 256x256 の Chrome ロゴが来る)。素直に受け取ると
+        # 曲が変わるたびにブラウザーのロゴが一瞬出て、そのあとアートに変わる。
+        # 名無しの間は前の曲のアートを出したままにしておく方が落ち着く
+        named = bool(title or artist or album)
         if track_key != self._track_key:
             # 曲が変わった。アートはすぐには追いついてこないので、しばらく
             # 読み直す。実測では 0.1〜0.5 秒ほど遅れて本来の画像が届く
             self._track_key = track_key
             self._art_deadline = time.monotonic() + ART_RETRY_WINDOW
-            await self._refresh_art(props, fresh=True)
-        elif time.monotonic() < self._art_deadline:
+            if named:
+                await self._refresh_art(props, fresh=True)
+        elif named and time.monotonic() < self._art_deadline:
             await self._refresh_art(props, fresh=False)
 
         duration, position = self._steady_timeline(

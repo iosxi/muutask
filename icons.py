@@ -9,8 +9,8 @@ from PIL import Image, ImageDraw, ImageFilter
 
 SUPERSAMPLE = 4
 
-#: この倍率より大きく引き伸ばすときは、輪郭を締め直す。Chrome 経由のアート
-#: は 120x120 しか来ないことがあり、大きな小窓ではそのままだとぼやける
+#: この倍率より大きく引き伸ばすときは、色ノイズをならして輪郭を締め直す。
+#: Chrome 経由のアートは 150x150 までしか来ないので、大きな小窓では必ず通る
 UPSCALE_SHARPEN_FROM = 1.15
 #: 締め直しの半径。元の 1 画素ぶんの半分あたりに置くと、輪郭だけに効く
 SHARPEN_RADIUS_RATIO = 0.5
@@ -19,6 +19,12 @@ SHARPEN_RADIUS_RANGE = (0.8, 3.0)
 #: 締め直しの強さ (%) と、無視する差 (0-255)。閾値を置くと平らな面が荒れない
 SHARPEN_PERCENT = 110
 SHARPEN_THRESHOLD = 2
+#: 色ノイズをならす半径 (元画像の画素で数える) と、その下限・上限。
+#: もらえるアートは JPEG を通ってきた小さい絵なので、平らな面に緑や紫の
+#: 斑点が乗っている。引き伸ばすとそれが粒として見えるが、色だけならせば
+#: 輪郭の鋭さを保ったまま消せる
+CHROMA_BLUR_RATIO = 0.3
+CHROMA_BLUR_RANGE = (0.5, 1.2)
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
@@ -70,21 +76,35 @@ def note_icon(size: int, fg: str, bg: Optional[str] = None, radius: int = 6) -> 
     return canvas.resize((size, size), Image.LANCZOS)
 
 
-def _sharpen_upscale(image: Image.Image, source_side: int) -> Image.Image:
-    """引き伸ばした画像の輪郭を締め直す。等倍以下ならそのまま返す。
+def _clean_chroma(image: Image.Image, factor: float) -> Image.Image:
+    """色ノイズをならす。引き伸ばす前の、小さいうちにかける。
 
-    無い解像度は戻らないが、輪郭がぼやけた感じはかなり収まる。
+    JPEG は色を間引いて畳むので、届くアートの平らな面には緑や紫の斑点が
+    残っている。引き伸ばすとそれが粒になって浮く。色 (Cb/Cr) だけをぼかし、
+    輝度 (Y) には触らないので、輪郭の鋭さは落ちない。
     """
-    factor = image.size[0] / source_side if source_side else 1.0
-    if factor < UPSCALE_SHARPEN_FROM:
-        return image
+    low, high = CHROMA_BLUR_RANGE
+    blur = ImageFilter.GaussianBlur(min(high, max(low, factor * CHROMA_BLUR_RATIO)))
+    y, cb, cr = image.convert("YCbCr").split()
+    return Image.merge("YCbCr", (y, cb.filter(blur), cr.filter(blur))).convert("RGB")
+
+
+def _sharpen_luma(image: Image.Image, factor: float) -> Image.Image:
+    """引き伸ばした画像の輪郭を締め直す。無い解像度は戻らないが、ぼやけた
+    感じはかなり収まる。
+
+    輝度だけを締める。RGB のまま締めると、せっかくならした色の縁が立ち直り、
+    輪郭に色が付いて見える。
+    """
     low, high = SHARPEN_RADIUS_RANGE
     radius = min(high, max(low, factor * SHARPEN_RADIUS_RATIO))
-    return image.filter(
+    y, cb, cr = image.convert("YCbCr").split()
+    y = y.filter(
         ImageFilter.UnsharpMask(
             radius=radius, percent=SHARPEN_PERCENT, threshold=SHARPEN_THRESHOLD
         )
     )
+    return Image.merge("YCbCr", (y, cb, cr)).convert("RGB")
 
 
 def album_art(data: Optional[bytes], size: int, radius: int, fg: str, bg: str) -> Image.Image:
@@ -104,8 +124,15 @@ def album_art(data: Optional[bytes], size: int, radius: int, fg: str, bg: str) -
                     (width - side) // 2 + side,
                     (height - side) // 2 + side,
                 )
-            ).resize((size, size), Image.LANCZOS)
-            return rounded(_sharpen_upscale(image, side), radius)
+            )
+            factor = size / side if side else 1.0
+            enlarging = factor >= UPSCALE_SHARPEN_FROM
+            if enlarging:
+                image = _clean_chroma(image, factor)
+            image = image.resize((size, size), Image.LANCZOS)
+            if enlarging:
+                image = _sharpen_luma(image, factor)
+            return rounded(image, radius)
         except (OSError, ValueError):
             pass
     return note_icon(size, fg, bg, radius)
