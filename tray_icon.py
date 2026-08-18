@@ -27,6 +27,7 @@ class Tray:
         on_next: Callable[[], None],
         on_prev: Callable[[], None],
         on_toggle_hide_when_idle: Callable[[], None],
+        on_toggle_wheel_volume: Callable[[], None],
         on_set_anchor: Callable[[str], None],
         on_set_width: Callable[[int], None],
         on_select_session: Callable[[Optional[str]], None],
@@ -57,6 +58,11 @@ class Tray:
                 "再生中のときだけ表示",
                 lambda: on_toggle_hide_when_idle(),
                 checked=lambda _i: self.config.bar_hide_when_idle,
+            ),
+            MenuItem(
+                "ホイールで音量を調整",
+                lambda: on_toggle_wheel_volume(),
+                checked=lambda _i: self.config.bar_wheel_volume,
             ),
             Menu.SEPARATOR,
             MenuItem("終了", lambda: on_quit()),
@@ -149,6 +155,7 @@ class Tray:
             state.sessions,
             self.config.session,
             self.config.bar_hide_when_idle,
+            self.config.bar_wheel_volume,
             self.config.bar_anchor,
             self.config.bar_width,
         )

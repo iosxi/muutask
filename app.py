@@ -88,6 +88,7 @@ class App:
             on_next=self.controller.next_track,
             on_prev=self.controller.previous_track,
             on_toggle_hide_when_idle=lambda: self._post(self._toggle_hide_when_idle),
+            on_toggle_wheel_volume=lambda: self._post(self._toggle_wheel_volume),
             on_set_anchor=lambda a: self._post(lambda: self._set_anchor(a)),
             on_set_width=lambda w: self._post(lambda: self._set_width(w)),
             on_select_session=lambda app_id: self._post(
@@ -213,6 +214,11 @@ class App:
             variable=self._var(self.config.bar_hide_when_idle),
             command=self._toggle_hide_when_idle,
         )
+        menu.add_checkbutton(
+            label="ホイールで音量を調整",
+            variable=self._var(self.config.bar_wheel_volume),
+            command=self._toggle_wheel_volume,
+        )
         menu.add_separator()
         menu.add_command(label="終了", command=self.quit)
         return menu
@@ -244,6 +250,12 @@ class App:
         self.bar.sync()
         self.tray.refresh_menu()
 
+    def _toggle_wheel_volume(self) -> None:
+        self.config.bar_wheel_volume = not self.config.bar_wheel_volume
+        self.config.save()
+        self.bar.apply_wheel_volume()
+        self.tray.refresh_menu()
+
     def _select_session(self, app_id) -> None:
         self.config.session = app_id
         self.config.save()
@@ -251,6 +263,7 @@ class App:
         self.tray.refresh_menu()
 
     def quit(self) -> None:
+        self.bar.close()
         self.controller.stop()
         self.tray.stop()
         try:

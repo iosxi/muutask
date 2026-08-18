@@ -256,3 +256,122 @@ def sample_color(points: list[tuple[int, int]]) -> Optional[str]:
     if not counts:
         return None
     return max(counts.items(), key=lambda item: item[1])[0]
+
+
+# ------------------------------------------------------------------ 音量
+
+VK_VOLUME_DOWN = 0xAE
+VK_VOLUME_UP = 0xAF
+KEYEVENTF_KEYUP = 0x0002
+
+
+def volume_step(up: bool) -> None:
+    """システムの音量を 1 段 (2%) 動かす。
+
+    音量デバイスを COM で掴まず、メディア キーを送るだけにしている。既定の
+    再生デバイスの選び直しや、複数デバイスの扱いを OS に任せられるうえ、
+    Windows 標準の音量表示 (OSD) もそのまま出るため。
+    """
+    vk = VK_VOLUME_UP if up else VK_VOLUME_DOWN
+    user32.keybd_event(vk, 0, 0, 0)
+    user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+
+
+# ------------------------------------------------------------------ ホイール
+
+WH_MOUSE_LL = 14
+HC_ACTION = 0
+WM_MOUSEWHEEL = 0x020A
+
+ULONG_PTR = ctypes.c_size_t
+LRESULT = ctypes.c_ssize_t
+
+
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("pt", POINT),
+        ("mouseData", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    ]
+
+
+HOOKPROC = ctypes.WINFUNCTYPE(
+    LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
+)
+
+user32.SetWindowsHookExW.argtypes = [
+    ctypes.c_int,
+    HOOKPROC,
+    wintypes.HINSTANCE,
+    wintypes.DWORD,
+]
+user32.SetWindowsHookExW.restype = wintypes.HHOOK
+user32.CallNextHookEx.argtypes = [
+    wintypes.HHOOK,
+    ctypes.c_int,
+    wintypes.WPARAM,
+    wintypes.LPARAM,
+]
+user32.CallNextHookEx.restype = LRESULT
+user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
+
+
+class WheelHook:
+    """カーソルが特定の場所にあるときだけ、ホイールを横取りする。
+
+    バーは WS_EX_NOACTIVATE でフォーカスを持たないので、WM_MOUSEWHEEL は
+    黙っていても届かない。Windows はホイールをフォーカスのあるウィンドウへ
+    送り、「非アクティブ ウィンドウをホバー時にスクロール」が入っているときだけ
+    カーソルの下のウィンドウへ送る。その設定を切っている環境でも効くように、
+    低レベル マウス フックで拾う。
+
+    フックの処理は入力の流れを止めるので、中では位置の判定と音量キーの送出
+    しか行わない (時間がかかると Windows にフックを外される)。
+    """
+
+    def __init__(self, on_wheel) -> None:
+        #: on_wheel(x, y, delta) -> bool。True を返すと下へ流さない
+        self._on_wheel = on_wheel
+        # ctypes のコールバックは参照を持っていないと GC され、呼ばれた瞬間に落ちる
+        self._proc = HOOKPROC(self._callback)
+        self._handle = None
+
+    def install(self) -> bool:
+        """フックを張る。張れなければ False (呼び出し元はあきらめる)。
+
+        低レベル フックは張ったスレッドのメッセージ ループで呼ばれるので、
+        Tk のメインループを回しているスレッドから呼ぶこと。
+        """
+        if self._handle:
+            return True
+        kernel32 = ctypes.windll.kernel32
+        # 既定の restype は c_int なので、宣言しないと 64bit のハンドルが
+        # 途中で切れて無効な値になる (フックが張れずに失敗する)
+        kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+        kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        module = kernel32.GetModuleHandleW(None)
+        handle = user32.SetWindowsHookExW(WH_MOUSE_LL, self._proc, module, 0)
+        self._handle = handle or None
+        return self._handle is not None
+
+    def uninstall(self) -> None:
+        if self._handle:
+            user32.UnhookWindowsHookEx(self._handle)
+            self._handle = None
+
+    def _callback(self, code, wparam, lparam):
+        if code == HC_ACTION and wparam == WM_MOUSEWHEEL:
+            try:
+                info = ctypes.cast(
+                    lparam, ctypes.POINTER(MSLLHOOKSTRUCT)
+                ).contents
+                # 回した量は mouseData の上位 16 ビットに符号付きで入っている
+                delta = ctypes.c_short((info.mouseData >> 16) & 0xFFFF).value
+                if self._on_wheel(info.pt.x, info.pt.y, delta):
+                    return 1  # 下のウィンドウには渡さない
+            except Exception:
+                # ここで例外を投げると入力が詰まる。握り潰して素通しさせる
+                pass
+        return user32.CallNextHookEx(None, code, wparam, lparam)

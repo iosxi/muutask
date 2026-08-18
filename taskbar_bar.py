@@ -42,6 +42,10 @@ BAR_WIDTHS = (
 #: これより狭い場所には置かない (96 DPI 基準の px)
 MIN_WIDTH = 120
 
+#: ホイール 1 ノッチ分の値 (WHEEL_DELTA)。
+#: 高分解能ホイールはこれより細かい値で刻んでくるので、貯めてから使う
+WHEEL_DELTA = 120
+
 EMPTY_TITLE = "再生中の音楽はありません"
 
 #: 文字送りの速さ (96 DPI 基準の px/秒)
@@ -84,6 +88,8 @@ class TaskbarBar:
         self._pressed: Optional[str] = None
         self._hitboxes: dict[str, tuple[int, int, int, int]] = {}
         self._bg_rows: Optional[list[str]] = None  # タスクバーの行ごとの色
+        self._wheel_hook: Optional[winapi.WheelHook] = None
+        self._wheel_accum = 0  # まだ 1 ノッチに満たないホイールの残り
         # 流れる文字まわり
         self._texts: dict[str, str] = {}
         self._periods: dict[str, int] = {}  # 0 なら流さない (収まっている)
@@ -118,6 +124,7 @@ class TaskbarBar:
         self._bind()
         self._built_size: Optional[tuple[int, int]] = None
         self._anchor_used: Optional[str] = None
+        self.apply_wheel_volume()
 
     # ------------------------------------------------------------------ 配色
 
@@ -406,6 +413,47 @@ class TaskbarBar:
             self.controller.next_track()
         elif name == "play":
             self.controller.toggle_play_pause()
+
+    # ------------------------------------------------------- ホイールで音量
+
+    def apply_wheel_volume(self) -> None:
+        """設定に合わせて、ホイールの横取りを付け外しする。
+
+        低レベル フックは張ったスレッドで呼ばれるので、Tk のメインループを
+        回しているスレッドから呼ぶこと (トレイのメニューからは _post 経由)。
+        """
+        want = self.config.bar_wheel_volume
+        if want and self._wheel_hook is None:
+            hook = winapi.WheelHook(self._on_wheel)
+            self._wheel_hook = hook if hook.install() else None
+        elif not want and self._wheel_hook is not None:
+            self._wheel_hook.uninstall()
+            self._wheel_hook = None
+        self._wheel_accum = 0
+
+    def close(self) -> None:
+        """終了時の後片付け。フックは張りっぱなしにしない。"""
+        if self._wheel_hook is not None:
+            self._wheel_hook.uninstall()
+            self._wheel_hook = None
+
+    def _on_wheel(self, x: int, y: int, delta: int) -> bool:
+        """バーの上で回されたホイールを音量に回す。True で下へ流さない。"""
+        if not self.visible or self._geometry is None:
+            return False
+        bx, by, width, height = self._geometry
+        if not (bx <= x < bx + width and by <= y < by + height):
+            self._wheel_accum = 0
+            return False
+        # 何かに覆われているなら、そのウィンドウの取り分。横取りしない
+        if winapi.is_covered(self._hwnd, x, y):
+            return False
+        self._wheel_accum += delta
+        while abs(self._wheel_accum) >= WHEEL_DELTA:
+            up = self._wheel_accum > 0
+            self._wheel_accum += -WHEEL_DELTA if up else WHEEL_DELTA
+            winapi.volume_step(up)
+        return True
 
     # ------------------------------------------------------------------ 位置合わせ
 
