@@ -9,6 +9,7 @@ import pystray
 from pystray import Menu, MenuItem
 
 import icons
+from art_popup import POPUP_HEIGHTS
 from media_session import NowPlaying
 from taskbar_bar import BAR_ANCHORS, BAR_WIDTHS
 from theme import Palette
@@ -30,6 +31,7 @@ class Tray:
         on_toggle_wheel_volume: Callable[[], None],
         on_set_anchor: Callable[[str], None],
         on_set_width: Callable[[int], None],
+        on_set_art_size: Callable[[int], None],
         on_select_session: Callable[[Optional[str]], None],
         on_quit: Callable[[], None],
         config,
@@ -38,10 +40,10 @@ class Tray:
         self._on_select_session = on_select_session
         self._on_set_anchor = on_set_anchor
         self._on_set_width = on_set_width
+        self._on_set_art_size = on_set_art_size
         self.config = config
         self.palette = Palette.current()
 
-        self._icon_key: Optional[str] = None
         self._menu_key: Optional[tuple] = None
         self._thread: Optional[threading.Thread] = None
 
@@ -53,6 +55,7 @@ class Tray:
             MenuItem("再生元", Menu(self._session_items)),
             MenuItem("表示位置", Menu(self._anchor_items)),
             MenuItem("バーの幅", Menu(self._width_items)),
+            MenuItem("アルバム アートの大きさ", Menu(self._art_size_items)),
             Menu.SEPARATOR,
             MenuItem(
                 "再生中のときだけ表示",
@@ -70,7 +73,7 @@ class Tray:
 
         self.icon = pystray.Icon(
             "MuuTask",
-            icon=self._make_image(NowPlaying()),
+            icon=self._make_image(),
             title="MuuTask",
             menu=menu,
         )
@@ -117,15 +120,28 @@ class Tray:
                 f"{label} ({value})", select(value), checked=is_selected(value), radio=True
             )
 
+    def _art_size_items(self):
+        def select(value: int):
+            return lambda _icon: self._on_set_art_size(value)
+
+        def is_selected(value: int):
+            return lambda _item: self.config.popup_height == value
+
+        for value, label in POPUP_HEIGHTS:
+            yield MenuItem(
+                f"{label} ({value})", select(value), checked=is_selected(value), radio=True
+            )
+
     # ------------------------------------------------------------------ 見た目
 
-    def _make_image(self, state: NowPlaying):
-        image = icons.album_art(
-            state.thumbnail, ICON_SIZE, 10, self.palette.accent, self.palette.card
-        )
-        if state.has_media and not state.is_playing:
-            image = icons.dim(image, 0.35)
-        return image
+    def _make_image(self):
+        """トレイのアイコン。曲が変わっても音符のままにしておく。
+
+        通知領域では 16x16 まで縮められるので、アルバム アートを入れても
+        潰れて何が写っているか分からない。ここは MuuTask の目印として
+        音符を出し続け、いま何が鳴っているかはツールチップに任せる。
+        """
+        return icons.note_icon(ICON_SIZE, self.palette.accent, self.palette.card, 10)
 
     @staticmethod
     def _tooltip(state: NowPlaying) -> str:
@@ -139,14 +155,7 @@ class Tray:
         return text[:TOOLTIP_LIMIT]
 
     def update(self, state: NowPlaying) -> None:
-        """再生状態に合わせてアイコンとツールチップを更新する。"""
-        key = f"{state.art_key}|{state.status}"
-        if key != self._icon_key:
-            self._icon_key = key
-            try:
-                self.icon.icon = self._make_image(state)
-            except Exception:
-                pass
+        """再生状態に合わせてツールチップとメニューを更新する。"""
         tooltip = self._tooltip(state)
         if self.icon.title != tooltip:
             self.icon.title = tooltip
@@ -158,6 +167,7 @@ class Tray:
             self.config.bar_wheel_volume,
             self.config.bar_anchor,
             self.config.bar_width,
+            self.config.popup_height,
         )
         if menu_key != self._menu_key:
             self._menu_key = menu_key

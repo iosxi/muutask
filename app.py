@@ -18,6 +18,7 @@ from typing import Callable
 
 import theme
 import winapi
+from art_popup import POPUP_HEIGHTS
 from config import Config
 from media_session import MediaController, NowPlaying
 from taskbar_bar import BAR_ANCHORS, BAR_WIDTHS, TaskbarBar
@@ -91,6 +92,7 @@ class App:
             on_toggle_wheel_volume=lambda: self._post(self._toggle_wheel_volume),
             on_set_anchor=lambda a: self._post(lambda: self._set_anchor(a)),
             on_set_width=lambda w: self._post(lambda: self._set_width(w)),
+            on_set_art_size=lambda h: self._post(lambda: self._set_art_size(h)),
             on_select_session=lambda app_id: self._post(
                 lambda: self._select_session(app_id)
             ),
@@ -209,6 +211,18 @@ class App:
             )
         menu.add_cascade(label="バーの幅", menu=widths)
 
+        art_sizes = tk.Menu(menu, tearoff=0)
+        art_size = tk.IntVar(master=self.root, value=self.config.popup_height)
+        self._menu_vars.append(art_size)
+        for value, label in POPUP_HEIGHTS:
+            art_sizes.add_radiobutton(
+                label=f"{label} ({value})",
+                value=value,
+                variable=art_size,
+                command=lambda v=value: self._set_art_size(v),
+            )
+        menu.add_cascade(label="アルバム アートの大きさ", menu=art_sizes)
+
         menu.add_checkbutton(
             label="再生中のときだけ表示",
             variable=self._var(self.config.bar_hide_when_idle),
@@ -242,6 +256,13 @@ class App:
         self.config.bar_width = width
         self.config.save()
         self.bar.sync()
+        self.tray.refresh_menu()
+
+    def _set_art_size(self, height: int) -> None:
+        """ホバーで出る小窓の大きさ。開いていれば新しい大きさで出し直す。"""
+        self.config.popup_height = height
+        self.config.save()
+        self.bar.refresh_popup()
         self.tray.refresh_menu()
 
     def _toggle_hide_when_idle(self) -> None:

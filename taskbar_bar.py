@@ -383,6 +383,11 @@ class TaskbarBar:
         self.popup.hide()
         self.on_context_menu(event.x_root, event.y_root)
 
+    def refresh_popup(self) -> None:
+        """小窓の大きさが変わったとき。出ていれば新しい大きさで出し直す。"""
+        if self.popup.visible:
+            self._open_popup()
+
     def _open_popup(self) -> None:
         self._popup_job = None
         if not self.visible or self._geometry is None or self._menu_open():
