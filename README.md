@@ -38,13 +38,30 @@ PyInstaller で単体の exe に固めて、配布用の zip までまとめて�
 
 | 出力 | 中身 |
 | --- | --- |
-| `dist\MuuTask.exe` | Python なしで動く実行ファイル (onefile / コンソールなし・約 13.6 MB) |
+| `dist\MuuTask.exe` | Python なしで動く実行ファイル (onefile / コンソールなし・約 13.3 MB) |
 | `dist\MuuTask-<版>.zip` | 配布用。`MuuTask.exe` と [README.txt](README.txt) |
 
 exe には Python 本体 (2.6 MB)・Tcl/Tk・Pillow・WinRT の射影が丸ごと入るため、
 どうしてもこの程度の大きさになります。使っていない重い依存
 (AVIF コーデック 4.1 MB、OpenSSL 2.1 MB、FreeType 0.9 MB など) は
-`build.ps1` の `$excludes` で外していて、これで 21 MB → 13.6 MB です。
+`build.ps1` の `$excludes` で外していて、これで 21 MB → 13.3 MB です。
+
+**onefile の exe は、起動のたびに中身を `%TEMP%\_MEI<番号>\` に展開してから
+走ります。**この展開が起動時の重さのほぼ全てで、ログイン直後は他の常駐と
+重なってマウスが飛ぶほどになります。そこで、読まれない付属データを外して
+展開するファイル数を減らしています — Tcl の時刻帯データ `tzdata` (609 個) と
+Tcl/Tk の訳文 `msgs` (145 個)。時刻の書式もダイアログも Tk には投げていないので、
+どちらも読まれません。実測 (起動から 3 秒間、同じ機械で 3 回ずつ):
+
+| | 展開 | 起動の CPU |
+| --- | --- | --- |
+| 外す前 | 1008 ファイル / 27.0 MB | 1.17 - 1.28 秒 |
+| 外した後 | 254 ファイル / 25.7 MB | 0.86 - 0.89 秒 |
+
+データ ファイルは `--exclude-module` では消せないため、`build.ps1` は
+`pyi-makespec` で spec を作り、`a.datas` を絞る数行を差し込んでから
+PyInstaller にかけています。外すはずのものが見つからなければ、黙って
+元に戻らないよう spec の中で止めます。
 
 版番号は [config.py](config.py) の `APP_VERSION` が唯一の出どころで、zip 名と
 [README.txt](README.txt) の `@VERSION@` に埋め込まれます。**`v1` から始めて、

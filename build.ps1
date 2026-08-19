@@ -55,15 +55,38 @@ $excludeArgs = $excludes | ForEach-Object { '--exclude-module'; $_ }
 $dist = Join-Path $root 'dist'
 $work = Join-Path $root 'build'
 $started = Get-Date
-& $python -m PyInstaller `
-    --noconfirm --clean `
+
+# onefile の exe は、起動のたびに中身を %TEMP% に展開してから走る。展開する
+# ファイルが多いほど起動が重く (実測 1008 ファイル/27MB で 1 コアを 1.3 秒
+# 占有)、ログイン直後だと他の常駐と重なってマウスが飛ぶ。使わない付属データ
+# は spec を作ってから外す — データ ファイルは --exclude-module では消せない。
+& $python -m PyInstaller.utils.cliutils.makespec `
     --onefile --windowed `
     --name MuuTask `
     --icon (Join-Path $root 'muutask.ico') `
     --hidden-import pystray._win32 `
     @excludeArgs `
-    --distpath $dist --workpath $work --specpath $work `
+    --specpath $work `
     (Join-Path $root 'app.py')
+if ($LASTEXITCODE -ne 0) { throw "spec の作成に失敗しました (終了コード $LASTEXITCODE)。" }
+
+$spec = Join-Path $work 'MuuTask.spec'
+$text = [IO.File]::ReadAllText($spec)
+$anchor = 'pyz = PYZ('
+if ($text -notmatch [regex]::Escape($anchor)) { throw "spec の形が変わりました: $spec" }
+# Tcl の時刻帯データ (609 個) と Tcl/Tk の訳文 (145 個)。時刻の書式も
+# ダイアログも Tk には投げていないので、どちらも読まれない
+$prune = @'
+_drop = ('_tcl_data/tzdata', '_tcl_data/msgs', '_tk_data/msgs')
+_kept = [d for d in a.datas if not d[0].replace('\\', '/').startswith(_drop)]
+if len(_kept) == len(a.datas):
+    raise SystemExit('外すつもりの Tcl/Tk データが見つかりませんでした')
+a.datas = _kept
+
+'@
+[IO.File]::WriteAllText($spec, $text.Replace($anchor, $prune + $anchor))
+
+& $python -m PyInstaller --noconfirm --clean --distpath $dist --workpath $work $spec
 
 # $ErrorActionPreference は exe の失敗までは止めてくれないので、自分で見る
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller が失敗しました (終了コード $LASTEXITCODE)。" }
