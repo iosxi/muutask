@@ -45,7 +45,7 @@ winget install --id Microsoft.VisualStudio.2022.BuildTools -e `
 
 | 出力 | 中身 |
 | --- | --- |
-| `dist\MuuTask\` | 配布フォルダー。`MuuTask.exe` + [README.txt](README.txt) + `config.json` |
+| `dist\MuuTask\` | 配布フォルダー。`MuuTask.exe` + [README.txt](README.txt) |
 | `dist\MuuTask-<版>.zip` | 配布用 (約 210 KB) |
 
 **exe 1 つで動きます。** CRT を静的リンクしているので VC 再頒布可能パッケージも
@@ -57,8 +57,11 @@ C++/WinRT が使う `api-ms-win-core-winrt-*`)。
 出どころで、zip 名と [README.txt](README.txt) の `@VERSION@`、exe のバージョン
 情報に埋め込まれます。**`v1` から始めて、配布物を作るたびに 1 ずつ上げます。**
 
-同梱する `config.json` は `MuuTask.exe --emit-config` に書かせています。既定値を
-`Config` の定義と二重管理にしないためで、これ以外に隠しスイッチはありません。
+`config.json` は**配りません** (v22 まで既定値のものを同梱していました)。設定を
+変えたときに exe 自身が隣へ書くもので、既定値のまま配っても伝わることが無く、
+「入っている以上は消してはいけないもの」に見えてしまうためです。zip に入れる
+ものは [build.ps1](build.ps1) で名指ししてあり、開発機の `config.json` や
+`MuuTask.log` は混ざりません。
 
 ### ビルドで踏んだ落とし穴
 

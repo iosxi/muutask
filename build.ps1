@@ -5,7 +5,6 @@
 #   dist\MuuTask\                 そのまま動く配布フォルダー
 #     MuuTask.exe                 実行ファイル (CRT は静的リンク・約 0.4 MB)
 #     README.txt                  取扱説明 (版番号を埋めたもの)
-#     config.json                 設定の初期値
 #   dist\MuuTask-<版>.zip         配布用 (上のフォルダーを固めたもの)
 #
 # 古い zip は新しい方から KEEP_ZIPS 個だけ残し、それより古いものは消す。
@@ -78,8 +77,7 @@ if ((Get-Item $built).LastWriteTime -lt $newest.LastWriteTime) {
 # ---------------------------------------------------------------- 配布フォルダー
 
 $appdir = Join-Path $dist 'MuuTask'
-# ここから直に動かしていることがあるので、設定は作り直しても持ち越す。
-# (zip に入れる方は、後で既定値に戻したものを書き直す)
+# ここから直に動かしていることがあるので、設定は作り直しても持ち越す
 $keep = Join-Path $appdir 'config.json'
 $kept = if (Test-Path $keep) { [IO.File]::ReadAllBytes($keep) } else { $null }
 if (Test-Path $appdir) { Remove-Item -Recurse -Force $appdir }
@@ -92,28 +90,12 @@ if ($readme -notmatch '@VERSION@') { throw 'README.txt に @VERSION@ があり�
 $readme = $readme -replace '@VERSION@', $version.TrimStart('v')
 [IO.File]::WriteAllText((Join-Path $appdir 'README.txt'), $readme, (New-Object Text.UTF8Encoding $true))
 
-# config.json も同梱する。手で編集する項目 (bar_width など) の見本になるし、
-# 設定が exe の隣にあることも見て分かる。値は exe 自身に書かせるので、Config の
-# 定義と二重管理にならない。
-#
-# GUI サブシステムの exe なので、& で呼ぶと終わるのを待たずに戻ってしまう。
-# Start-Process -Wait で待つこと。
-function Write-DefaultConfig([string]$folder) {
-    $emit = Start-Process -FilePath (Join-Path $folder 'MuuTask.exe') `
-        -ArgumentList '--emit-config' -PassThru -Wait
-    if ($emit.ExitCode -ne 0) {
-        throw "config.json の初期値を作れませんでした (終了コード $($emit.ExitCode))。"
-    }
-    if (-not (Test-Path (Join-Path $folder 'config.json'))) {
-        throw 'config.json が書き出されませんでした。'
-    }
-}
-
+# config.json は配らない。設定を変えたときに exe 自身が隣へ書くもので、
+# 既定値のまま配っても中身は増えない。ここ (dist\MuuTask) だけは直に動かして
+# いることがあるので、前のものがあれば戻す。
 if ($null -ne $kept) {
     [IO.File]::WriteAllBytes((Join-Path $appdir 'config.json'), $kept)
     Write-Host '  (dist の config.json は前のものを引き継ぎました)'
-} else {
-    Write-DefaultConfig $appdir
 }
 
 # ---------------------------------------------------------------- zip
@@ -124,9 +106,9 @@ $package = Join-Path $work 'package'
 if (Test-Path $package) { Remove-Item -Recurse -Force $package }
 $stage = Join-Path $package "MuuTask-$version"
 New-Item -ItemType Directory -Force $stage | Out-Null
-Copy-Item -Recurse (Join-Path $appdir '*') $stage
-# 配る方は必ず既定値にする (開発機の設定を混ぜない)
-Write-DefaultConfig $stage
+# 入れるものを名指しする。開発機の config.json や MuuTask.log を巻き込まない
+Copy-Item (Join-Path $appdir 'MuuTask.exe') $stage
+Copy-Item (Join-Path $appdir 'README.txt') $stage
 
 $zip = Join-Path $dist "MuuTask-$version.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }

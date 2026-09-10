@@ -5,10 +5,8 @@
 
 #include <windows.h>
 #include <objbase.h>
-#include <shellapi.h>
 
 #include "app.h"
-#include "config.h"
 #include "theme.h"
 #include "version.h"
 
@@ -24,27 +22,9 @@ bool AlreadyRunning() {
     return GetLastError() == ERROR_ALREADY_EXISTS;
 }
 
-/// コマンド ラインに指定の語があるか。
-bool HasArgument(wchar_t const* name) {
-    int count = 0;
-    wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &count);
-    if (!argv) return false;
-    bool found = false;
-    for (int i = 1; i < count && !found; ++i) found = wcscmp(argv[i], name) == 0;
-    LocalFree(argv);
-    return found;
-}
-
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
-    // build.ps1 が同梱用の config.json を書き出すために使う。既定値を
-    // Config の定義と二重管理にしないための隠しスイッチで、書いたら終わる。
-    if (HasArgument(L"--emit-config")) {
-        Config().Save();
-        return 0;
-    }
-
     if (AlreadyRunning()) return 0;
 
     // 高 DPI でぼやけないように。ウィンドウを作る前に呼ぶこと。
