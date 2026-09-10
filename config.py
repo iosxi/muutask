@@ -14,16 +14,16 @@ from pathlib import Path
 from typing import Optional
 
 APP_NAME = "MuuTask"
-APP_VERSION = "20"  # v1 から配布のたびに 1 ずつ上げる
+APP_VERSION = "21"  # v1 から配布のたびに 1 ずつ上げる
 
 
 def _config_path() -> Path:
     """設定は exe と同じフォルダーに置く。
 
     アンインストーラーの無いツールなので、消し忘れる場所を作らないことを
-    優先している。onefile では sys._MEIPASS が %TEMP% の展開先を指すので、
-    そちらではなく sys.executable のある階層を使う (終了時に消える場所に
-    書かないため)。
+    優先している。onedir 形式なので exe の隣がそのまま配布フォルダーで、
+    付属ファイルは lib フォルダーの下にある。sys._MEIPASS (= その lib) では
+    なく sys.executable のある階層を使うのは、設定を目に見える場所に置くため。
     """
     base = (
         Path(sys.executable).parent

@@ -1,9 +1,13 @@
-﻿# MuuTask を単体の exe に固めて、README.txt と一緒に zip にする。
+﻿# MuuTask を onedir 形式でまとめて、README.txt と一緒に zip にする。
 #   powershell -ExecutionPolicy Bypass -File build.ps1
 #
 # 出来上がるもの:
-#   dist\MuuTask.exe              単体で動く実行ファイル
-#   dist\MuuTask-<版>.zip         配布用 (MuuTask.exe + README.txt)
+#   dist\MuuTask\                 そのまま動く配布フォルダー
+#     MuuTask.exe                実行ファイル
+#     README.txt                 取扱説明 (版番号を埋めたもの)
+#     config.json                設定の初期値
+#     lib\                       Python と Tcl/Tk 一式 (触らない)
+#   dist\MuuTask-<版>.zip         配布用 (上のフォルダーを固めたもの)
 #
 # 古い zip は新しい方から KEEP_ZIPS 個だけ残し、それより古いものは消す。
 
@@ -56,12 +60,15 @@ $dist = Join-Path $root 'dist'
 $work = Join-Path $root 'build'
 $started = Get-Date
 
-# onefile の exe は、起動のたびに中身を %TEMP% に展開してから走る。展開する
-# ファイルが多いほど起動が重く (実測 1008 ファイル/27MB で 1 コアを 1.3 秒
-# 占有)、ログイン直後だと他の常駐と重なってマウスが飛ぶ。使わない付属データ
-# は spec を作ってから外す — データ ファイルは --exclude-module では消せない。
+# onefile は起動のたびに中身を %TEMP% へ展開してから走るので、そのぶんだけ
+# 待たされる (実測 1008 ファイル/27MB で 1 コアを 1.3 秒占有)。onedir はその
+# 展開が要らない代わり、exe の隣にファイルが散らばる。--contents-directory で
+# lib\ にまとめ、目に入るのは exe と README.txt と config.json だけにする。
+# 使わない付属データは spec を作ってから外す — データ ファイルは
+# --exclude-module では消せない。
 & $python -m PyInstaller.utils.cliutils.makespec `
-    --onefile --windowed `
+    --onedir --windowed `
+    --contents-directory lib `
     --name MuuTask `
     --icon (Join-Path $root 'muutask.ico') `
     --hidden-import pystray._win32 `
@@ -91,7 +98,8 @@ a.datas = _kept
 # $ErrorActionPreference は exe の失敗までは止めてくれないので、自分で見る
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller が失敗しました (終了コード $LASTEXITCODE)。" }
 
-$exe = Join-Path $dist 'MuuTask.exe'
+$appdir = Join-Path $dist 'MuuTask'
+$exe = Join-Path $appdir 'MuuTask.exe'
 if (-not (Test-Path $exe)) { throw 'exe が生成されませんでした。' }
 # 前回の exe が残っているだけ、という取り違えを防ぐ。ここを見ていないと
 # 古いバイナリを新しい版番号で配ってしまう
@@ -99,21 +107,46 @@ if ((Get-Item $exe).LastWriteTime -lt $started) {
     throw "exe が更新されていません。前回のものが残っています: $exe"
 }
 
-# zip の中は MuuTask-<版>\ の 1 階層にまとめる (展開時に散らからないように)
-$stage = Join-Path $work "package\MuuTask-$version"
-if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-New-Item -ItemType Directory -Force $stage | Out-Null
-Copy-Item $exe $stage
-
 # README.txt の版番号は置換で埋める (config.py と二重管理にしないため)
 $readme = [IO.File]::ReadAllText((Join-Path $root 'README.txt'))
 if ($readme -notmatch '@VERSION@') { throw 'README.txt に @VERSION@ がありません。' }
 $readme = $readme -replace '@VERSION@', $version.TrimStart('v')
-[IO.File]::WriteAllText((Join-Path $stage 'README.txt'), $readme, (New-Object Text.UTF8Encoding $true))
+[IO.File]::WriteAllText((Join-Path $appdir 'README.txt'), $readme, (New-Object Text.UTF8Encoding $true))
+
+# config.json も同梱する。手で編集する項目 (bar_width など) の見本になるし、
+# 設定が exe の隣にあることも見て分かる。値は Config の既定から起こすので、
+# 開発機の設定が紛れ込むことはない。BOM は付けない (アプリ自身の書き方に合わせる)
+$defaults = & $python -c 'import json, config; from dataclasses import asdict; print(json.dumps(asdict(config.Config()), indent=2))'
+if ($LASTEXITCODE -ne 0) { throw 'config.json の初期値を作れませんでした。' }
+[IO.File]::WriteAllText((Join-Path $appdir 'config.json'),
+    ($defaults -join "`r`n") + "`r`n", (New-Object Text.UTF8Encoding $false))
+
+# zip の中は MuuTask-<版>\ の 1 階層にまとめる (展開時に散らからないように)。
+# その 1 階層だけを入れた親フォルダーを丸ごと固めると、そのまま中身になる
+$package = Join-Path $work 'package'
+if (Test-Path $package) { Remove-Item -Recurse -Force $package }
+$stage = Join-Path $package "MuuTask-$version"
+New-Item -ItemType Directory -Force $stage | Out-Null
+Copy-Item -Recurse (Join-Path $appdir '*') $stage
 
 $zip = Join-Path $dist "MuuTask-$version.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
-Compress-Archive -Path $stage -DestinationPath $zip
+# onedir にしてファイル数が増えた分、Compress-Archive では遅いうえに、コピー
+# 直後の lib\ を走査しているウイルス対策と鉢合わせて "used by another process"
+# で落ちた (v21 で実際に発生)。.NET の CreateFromDirectory は速く、掴まれて
+# いても少し待てば通る
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+for ($try = 1; ; $try++) {
+    try {
+        [IO.Compression.ZipFile]::CreateFromDirectory($package, $zip)
+        break
+    } catch [IO.IOException], [UnauthorizedAccessException] {
+        if ($try -ge 5) { throw }
+        if (Test-Path $zip) { Remove-Item -Force $zip }
+        Write-Host "zip を作れませんでした。1 秒待って作り直します ($try/5)"
+        Start-Sleep -Seconds 1
+    }
+}
 
 # 古い配布物は溜め込まない。名前順だと v10 が v9 より前に来てしまうので、
 # 作られた順で見る
@@ -126,5 +159,5 @@ foreach ($file in $stale) {
 
 Write-Host ''
 Write-Host "完了しました:"
-Write-Host "  $exe"
+Write-Host "  $appdir"
 Write-Host "  $zip"

@@ -85,13 +85,14 @@ A-1 で直す必要はないが、同じ根っこの問題。
 
 いまの重さはほぼ全部 Python と PyInstaller のせい。
 
-- onefile の exe は**起動のたびに中身を `%TEMP%\_MEI<番号>\` に展開**してから
-  走る。この展開が起動時の重さのほぼ全て。
-- 13.3 MB のうち中身は Python 本体 (2.6 MB)・Tcl/Tk・Pillow・WinRT の射影。
-  不要な重い依存を `build.ps1` の `$excludes` で外して 21 MB → 13.3 MB まで
-  削ったが、これ以上は Python のままでは頭打ち。
+- 起動のたびの `%TEMP%` への展開は、onedir にして無くした (v21・起動の CPU は
+  0.86 秒 → 0.40 秒)。残る 0.40 秒は Python の import と Tk の初期化なので、
+  Python のままではここから下がらない。
+- 一式で 29 MB (zip 13.2 MB)。中身は Python 本体 (2.6 MB)・Tcl/Tk・Pillow・
+  WinRT の射影。不要な重い依存を `build.ps1` の `$excludes` で外して削ったが、
+  これ以上は Python のままでは頭打ち。
 
-C (または C++) で書き直せば、展開なしで即起動・数百 KB 級・常駐メモリも激減。
+C (または C++) で書き直せば、数百 KB 級・起動はさらに速く・常駐メモリも激減。
 使っている OS の機能はどれも素の Win32 / WinRT で足りる。
 
 ### 置き換えの見当
@@ -113,4 +114,5 @@ C (または C++) で書き直せば、展開なしで即起動・数百 KB 級�
 - 一気にやらず、まず**現状の挙動を README / DEVELOPMENT.md と突き合わせて
   仕様として固めてから**取りかかった方が安全。
 - ビルドが PyInstaller から MSVC / CMake に変わるので `build.ps1` も総取り替え。
-  配布 zip の形 (`MuuTask.exe` + `README.txt`) は維持する。
+  配布 zip の形 (`MuuTask.exe` + `README.txt` + `config.json` を 1 フォルダーに)
+  は維持する。C 化すれば `lib\` は要らなくなる。

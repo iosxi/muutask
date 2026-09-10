@@ -43,18 +43,32 @@ powershell -ExecutionPolicy Bypass -File setup.ps1   # 初回だけ
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-PyInstaller で単体の exe に固めて、配布用の zip までまとめて作ります
+PyInstaller で Python ごとフォルダーに固めて、配布用の zip までまとめて作ります
 (初回は PyInstaller の取得が入ります)。
 
 | 出力 | 中身 |
 | --- | --- |
-| `dist\MuuTask.exe` | Python なしで動く実行ファイル (onefile / コンソールなし・約 13.3 MB) |
-| `dist\MuuTask-<版>.zip` | 配布用。`MuuTask.exe` と [README.txt](README.txt) |
+| `dist\MuuTask\` | そのまま動く配布フォルダー (onedir / コンソールなし・約 29 MB) |
+| `dist\MuuTask-<版>.zip` | 配布用。上のフォルダーを固めたもの (約 13.2 MB) |
 
-exe には Python 本体 (2.6 MB)・Tcl/Tk・Pillow・WinRT の射影が丸ごと入るため、
-どうしてもこの程度の大きさになります。使っていない重い依存
-(AVIF コーデック 4.1 MB、OpenSSL 2.1 MB、FreeType 0.9 MB など) は
-`build.ps1` の `$excludes` で外していて、これで 21 MB → 13.3 MB です。
+配布フォルダーの中は、3 つのファイルと 1 つのフォルダーだけです。
+
+| | |
+| --- | --- |
+| `MuuTask.exe` | 3.2 MB。これをダブルクリックする |
+| `README.txt` | [README.txt](README.txt) に版番号を埋めたもの |
+| `config.json` | 設定の初期値 (`Config` の既定から起こす) |
+| `lib\` | 254 ファイル / 25.7 MB。Python・Tcl/Tk・Pillow・WinRT の射影 |
+
+`lib\` という名前は `--contents-directory` で付けています (PyInstaller の既定は
+`_internal`)。利用者の目に入る階層を 3 ファイルに保つためで、中の構成は
+変わりません。設定を `MuuTask.exe` の隣に置く方針 (`sys._MEIPASS` ではなく
+`sys.executable` の階層を見る) もそのままです。
+
+一式で 29 MB になるのは、Python 本体 (2.6 MB)・Tcl/Tk・Pillow・WinRT の射影が
+丸ごと入るためです。使っていない重い依存 (AVIF コーデック 4.1 MB、
+OpenSSL 2.1 MB、FreeType 0.9 MB など) は `build.ps1` の `$excludes` で外して
+います (onefile だった頃の実測で 21 MB → 13.3 MB)。
 
 版番号は [config.py](config.py) の `APP_VERSION` が唯一の出どころで、zip 名と
 [README.txt](README.txt) の `@VERSION@` に埋め込まれます。**`v1` から始めて、
@@ -62,19 +76,28 @@ exe には Python 本体 (2.6 MB)・Tcl/Tk・Pillow・WinRT の射影が丸ご�
 [make_icon.py](make_icon.py) がトレイと同じ音符から `muutask.ico` を書き出した
 ものを埋め込みます。`dist` と `build` は Git には入れていません。
 
-### 起動のたびの展開を減らす
+### 起動を速くする (onefile をやめる)
 
 **onefile の exe は、起動のたびに中身を `%TEMP%\_MEI<番号>\` に展開してから
 走ります。**この展開が起動時の重さのほぼ全てで、ログイン直後は他の常駐と
-重なってマウスが飛ぶほどになります。そこで、読まれない付属データを外して
-展開するファイル数を減らしています — Tcl の時刻帯データ `tzdata` (609 個) と
-Tcl/Tk の訳文 `msgs` (145 個)。時刻の書式もダイアログも Tk には投げていないので、
-どちらも読まれません。実測 (起動から 3 秒間、同じ機械で 3 回ずつ):
+重なってマウスが飛ぶほどになります。まず読まれない付属データを外して展開する
+ファイル数を減らし (v20)、次に onedir に切り替えて展開そのものを無くしました
+(v21)。実測 (起動から 3 秒間の CPU 時間、同じ機械で 3 回ずつ):
 
-| | 展開 | 起動の CPU |
-| --- | --- | --- |
-| 外す前 | 1008 ファイル / 27.0 MB | 1.17 - 1.28 秒 |
-| 外した後 | 254 ファイル / 25.7 MB | 0.86 - 0.89 秒 |
+| | 中身 | 起動の CPU | プロセス |
+| --- | --- | --- | --- |
+| onefile・間引き前 (v19 まで) | 1008 ファイル / 27.0 MB | 1.17 - 1.28 秒 | 2 |
+| onefile・間引き後 (v20) | 254 ファイル / 25.7 MB | 0.86 - 0.89 秒 | 2 |
+| onedir (v21 以降) | 254 ファイル / 25.7 MB | **0.38 - 0.42 秒** | 1 |
+
+(onedir と同じ回に v20 の exe を測り直すと 0.80 - 1.00 秒でした。日によって
+上下しますが、半分以下になる比は変わりません)
+
+onedir には起動のたびのコピーが無いので、`lib\` の中身を減らしても起動は
+速くなりません。それでも間引きは続けています — 読まれないファイルを 754 個も
+配布フォルダーに置かないためです。外しているのは Tcl の時刻帯データ `tzdata`
+(609 個) と Tcl/Tk の訳文 `msgs` (145 個) で、時刻の書式もダイアログも Tk には
+投げていないので、どちらも読まれません。
 
 データ ファイルは `--exclude-module` では消せないため、`build.ps1` は
 `pyi-makespec` で spec を作り、`a.datas` を絞る数行を差し込んでから
@@ -248,14 +271,14 @@ Tk の Canvas は項目ごとのアルファ合成ができないため、1 ド�
 ## 常駐メモリ
 
 起動から 5 秒後と、以後 10 分ごとに `SetProcessWorkingSetSize(-1, -1)` で
-常駐ページを OS に返しています ([winapi.py](winapi.py))。import・Tk の初期化・
-onefile の展開など**起動時にしか触らないもの**がそのまま常駐し続けるためで、
-実測では本体プロセスが **66 MB → 14 MB** になりました (合計 76 MB → 23 MB)。
-捨てるのは物理メモリ上の常駐分だけなので、必要になれば読み直されます。
+常駐ページを OS に返しています ([winapi.py](winapi.py))。import や Tk の初期化
+など**起動時にしか触らないもの**がそのまま常駐し続けるためで、実測では
+**55.3 MB → 14.8 MB** になりました。捨てるのは物理メモリ上の常駐分だけなので、
+必要になれば読み直されます。
 
-残りの 8.5 MB は onefile の親プロセス (展開して子を起動する殻) です。
-`--onedir` にすればこのプロセスごと無くなり、起動時の展開も不要になりますが、
-配布物が exe 1 つではなくフォルダー一式になります。
+v21 で onedir にしてからは、常駐するのはこの 1 プロセスだけです。onefile の
+頃は、展開して子を起動するだけの親プロセスが 8.5 MB 居座っていて、合計
+23 MB でした。
 
 ## 設定ファイルとレジストリ
 
