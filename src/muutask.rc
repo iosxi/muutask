@@ -3,7 +3,7 @@
 #include "version.h"
 
 // exe に埋め込むアイコン。make_icon.py が音符から書き出したものをそのまま使う。
-1 ICON "../../muutask.ico"
+1 ICON "../muutask.ico"
 
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION 0, 0, 0, MUUTASK_VERSION_NUM

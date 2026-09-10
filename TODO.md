@@ -12,13 +12,12 @@
 ボタン以外のところを左クリックしたら、いま鳴らしているアプリのウィンドウを
 アクティブ化する。UI Automation でブラウザーのタブまで切り替える案は
 **入れない** (日本語 UI 依存・Chrome の UI 改変で壊れる・クロス プロセス UIA が
-数百 ms かかる・comtypes を抱き込んで exe が膨らむ、で割に合わない)。
-ブラウザーは**ウィンドウまで**で割り切る。
+数百 ms かかる、で割に合わない)。ブラウザーは**ウィンドウまで**で割り切る。
 
-### 1. AUMID からウィンドウを引き当てる (winapi.py)
+### 1. AUMID からウィンドウを引き当てる (src/win32util.cpp)
 
-GSMTC がくれるのは AUMID (`source_app_user_model_id`) だけで、HWND は
-付いてこない ([media_session.py](media_session.py) の `_app_id`)。自前で引く。
+GSMTC がくれるのは AUMID (`SourceAppUserModelId`) だけで、HWND は付いてこない
+([src/media.cpp](src/media.cpp) の `AppIdOf`)。自前で引く。
 
 - **Win32 アプリ** (foobar2000 / VLC / AIMP / Chrome / Edge): AUMID は実行
   ファイル名 (`chrome.exe` など)。`EnumWindows` → `GetWindowThreadProcessId`
@@ -31,18 +30,19 @@ GSMTC がくれるのは AUMID (`source_app_user_model_id`) だけで、HWND は
   可視・`WS_EX_TOOLWINDOW` でない・`DWMWA_CLOAKED` でないものを採る。
   cloaked の除外は UWP で必須 (裏に空のウィンドウが残る)。
 
-全部 ctypes で書けるので**依存は増やさない**。exe を 13.3 MB まで削った分を
+全部 Win32 で書けるので**依存は増やさない**。exe を 0.42 MB に収めた分を
 壊さないこと。
 
 ### 2. 前に出す
 
 バーは `WS_EX_NOACTIVATE` 付きのツール ウィンドウなので
-([winapi.py](winapi.py) の `make_tool_window`)、クリックしても MuuTask 自身は
-フォアグラウンドにならない。ただし `SetForegroundWindow` の制限は「そのプロセスが
-最後の入力イベントを受け取ったか」でも通るので、クリック直後なら呼べるはず。
+([src/win32util.cpp](src/win32util.cpp) の `MakeToolWindow`)、クリックしても
+MuuTask 自身はフォアグラウンドにならない。ただし `SetForegroundWindow` の制限は
+「そのプロセスが最後の入力イベントを受け取ったか」でも通るので、クリック直後
+なら呼べるはず。
 
 - `IsIconic` なら `ShowWindow(SW_RESTORE)` → `SetForegroundWindow`
-- 失敗したら `SwitchToThisWindow(hwnd, True)` にフォールバック
+- 失敗したら `SwitchToThisWindow(hwnd, TRUE)` にフォールバック
 - NOACTIVATE のウィンドウが「最後の入力」扱いになるかは**実機で要確認**。
   フォールバックがあるので詰みはしない。
 
@@ -62,57 +62,27 @@ Chrome / Edge は**タブごとに別々の GSMTC セッション**を出すが�
 
 ### 4. 触るところ
 
-- `_on_release` ([taskbar_bar.py](taskbar_bar.py)) で `_hit` が `None` かつ
-  押した位置と離した位置が同じ (ドラッグでない) ときにアクティブ化。押下時に
-  `_hit` が `None` だったことも記録が要る — 今は `self._pressed` に None が
-  入るので、**ボタン外の押下**と**無効なボタンの押下**の区別が付かない。
-- アートの小窓は最前面なので、アクティブ化の前に `popup.hide()`。
+- [src/bar.cpp](src/bar.cpp) の `WM_LBUTTONUP` で、`HitTest` が `Button::None`
+  かつ押した位置と離した位置が同じ (ドラッグでない) ときにアクティブ化。
+  押下時に `Button::None` だったことも記録が要る — 今は `pressed_` に
+  `Button::None` が入るので、**ボタン外の押下**と**無効なボタンの押下**の
+  区別が付かない。
+- アートの小窓は最前面なので、アクティブ化の前に `Popup::Hide()`。
 - 誤爆を嫌う人向けに、右クリック メニューに `bar_click_activates` (既定 on) を
   1 つ足す。ホイール音量 (`bar_wheel_volume`) と同じ扱い。
 
 ### 分かっている隣の穴 (A-1 の範囲外)
 
 タブごとにセッションが立つのに AUMID が同じなので、右クリック メニューの
-**「再生元の切り替え」**でも複数タブが同じ名前で並んで見分けが付かない
-([media_session.py](media_session.py) の `_pick_session` の `listing`)。
+**「再生元」**でも複数タブが同じ名前で並んで見分けが付かない
+([src/media.cpp](src/media.cpp) の `PickSession` が返す listing)。
 A-1 で直す必要はないが、同じ根っこの問題。
 
 ---
 
-## A-2. Python をやめて C 化し、軽くする
+## 済んだもの
 
-**状態:** やると決定・未着手 (2026-08-25)
-
-いまの重さはほぼ全部 Python と PyInstaller のせい。
-
-- 起動のたびの `%TEMP%` への展開は、onedir にして無くした (v21・起動の CPU は
-  0.86 秒 → 0.40 秒)。残る 0.40 秒は Python の import と Tk の初期化なので、
-  Python のままではここから下がらない。
-- 一式で 29 MB (zip 13.2 MB)。中身は Python 本体 (2.6 MB)・Tcl/Tk・Pillow・
-  WinRT の射影。不要な重い依存を `build.ps1` の `$excludes` で外して削ったが、
-  これ以上は Python のままでは頭打ち。
-
-C (または C++) で書き直せば、数百 KB 級・起動はさらに速く・常駐メモリも激減。
-使っている OS の機能はどれも素の Win32 / WinRT で足りる。
-
-### 置き換えの見当
-
-| いま | C 化したら |
-| --- | --- |
-| winrt-Windows.Media.Control | `Windows.Media.Control` を C++/WinRT で直接叩く |
-| Tk の Canvas 描画 | レイヤード ウィンドウ + Direct2D / GDI+ |
-| Pillow (アート のデコード・縮小) | WIC (Windows Imaging Component) |
-| pystray | `Shell_NotifyIcon` を直接 |
-| ctypes の winapi.py | そのまま Win32 呼び出しになる (むしろ素直になる) |
-
-### 注意
-
-- **文字送り (曲名が流れるやつ) と角丸の座**の描画は作り込んであるので、
-  移植で見た目が変わらないよう気を付ける。
-- 背景色のサンプリング (`sample_rows` / `sample_color`) はもともと GDI 直叩き
-  なので、ほぼそのまま移せる。
-- 一気にやらず、まず**現状の挙動を README / DEVELOPMENT.md と突き合わせて
-  仕様として固めてから**取りかかった方が安全。
-- ビルドが PyInstaller から MSVC / CMake に変わるので `build.ps1` も総取り替え。
-  配布 zip の形 (`MuuTask.exe` + `README.txt` + `config.json` を 1 フォルダーに)
-  は維持する。C 化すれば `lib\` は要らなくなる。
+- **A-2. Python をやめて C 化し、軽くする** — v22 で完了。起動の CPU が
+  0.47 秒 → 0.11 秒、常駐メモリが 17 MB → 1.8 MB、配布物が 29 MB → 0.42 MB。
+  経緯と実測値は [DEVELOPMENT.md](DEVELOPMENT.md) の
+  「Python から C++ へ」にある。

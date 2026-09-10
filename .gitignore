@@ -1,12 +1,10 @@
-__pycache__/
-*.pyc
-.venv/
-
-# 設定とログはソース実行時ここに出来る (exe 版は exe と同じフォルダー)
+# 設定とログは exe と同じフォルダーに出来る
 config.json
 MuuTask.log
 
-# build.ps1 の出力 (配布物はリポジトリに置かず、リリースに添付する)
+# build.ps1 / CMake の出力 (配布物はリポジトリに置かず、リリースに添付する)
 build/
 dist/
-*.spec
+
+# v21 までの Python 実装で使っていた仮想環境。消して構わない
+.venv/

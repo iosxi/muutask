@@ -56,3 +56,18 @@ target_link_options(MuuTask PRIVATE
     $<$<CONFIG:Release>:/OPT:REF>
     $<$<CONFIG:Release>:/OPT:ICF>
 )
+
+# muutask.ico を書き出す道具。アイコンはリソースとしてリンク前に要るので、
+# ふだんのビルドには含めない (EXCLUDE_FROM_ALL)。音符の形や色を変えたときだけ:
+#   cmake --build build --target icontool
+#   build\icontool.exe muutask.ico
+add_executable(icontool EXCLUDE_FROM_ALL
+    src/icontool.cpp
+    src/artwork.cpp
+    src/image.cpp
+    src/common.cpp
+)
+target_compile_definitions(icontool PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_compile_options(icontool PRIVATE /utf-8 /W4 /permissive- /EHsc)
+target_include_directories(icontool PRIVATE src)
+target_link_libraries(icontool PRIVATE user32 gdi32 msimg32 shlwapi ole32 windowscodecs)
