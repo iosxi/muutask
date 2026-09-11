@@ -44,6 +44,8 @@ public:
     void ToggleHideWhenIdle();
     void ToggleWheelVolume();
     void SelectSession(std::optional<std::wstring> const& app_id);
+    /// 音声の出力先 (既定の再生デバイス) を切り替える。
+    void SelectAudioOutput(std::wstring const& device_id);
     void Quit();
 
     /// バーやトレイからの右クリック。画面座標で受ける。
@@ -63,6 +65,8 @@ private:
     HWND hidden_ = nullptr;
     double scale_ = 1.0;
     bool menu_open_ = false;
+    //: 常駐量を削った回数。1 回目と 2 回目だけ間隔が違う
+    int trims_ = 0;
 
     Config config_;
     std::shared_ptr<media::NowPlaying const> state_ =

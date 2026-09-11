@@ -1,8 +1,14 @@
 #include "win32util.h"
 
-#include <endpointvolume.h>
+// mmdeviceapi.h を先に置くこと。functiondiscoverykeys_devpkey.h は
+// DEFINE_PROPERTYKEY が定義済みである前提で書かれていて、単独で読むと
+// 「型指定子がありません」で通らない (実測)。
 #include <mmdeviceapi.h>
 
+#include <endpointvolume.h>
+#include <functiondiscoverykeys_devpkey.h>
+
+#include <atomic>
 #include <iterator>
 #include <map>
 
@@ -215,31 +221,211 @@ void VolumeStep(bool up) {
     keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
 }
 
+// --------------------------------------------------------------- 音声の出力先
+
+namespace {
+
+/// 既定の出力先を切り替えるための、文書化されていない COM クラス。
+///
+/// 呼ぶのは SetDefaultEndpoint だけだが、vtable の並びを合わせないと別の
+/// メソッドを叩いてしまうので、前に並ぶものも同じ形で書いておく (中身は
+/// 使わないので、引数の型は大きさの合う void* で足りる)。
+struct DECLSPEC_UUID("f8679f50-850a-41cf-9c72-430f290290c8") IPolicyConfig
+    : public IUnknown {
+    virtual HRESULT STDMETHODCALLTYPE GetMixFormat(PCWSTR, void**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetDeviceFormat(PCWSTR, INT, void**) = 0;
+    virtual HRESULT STDMETHODCALLTYPE ResetDeviceFormat(PCWSTR) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetDeviceFormat(PCWSTR, void*, void*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetProcessingPeriod(PCWSTR, INT, PINT64,
+                                                          PINT64) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetProcessingPeriod(PCWSTR, PINT64) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetShareMode(PCWSTR, void*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetShareMode(PCWSTR, void*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetPropertyValue(PCWSTR, REFPROPERTYKEY,
+                                                       PROPVARIANT*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetPropertyValue(PCWSTR, REFPROPERTYKEY,
+                                                       PROPVARIANT*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetDefaultEndpoint(PCWSTR, ERole) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetEndpointVisibility(PCWSTR, INT) = 0;
+};
+class DECLSPEC_UUID("870af99c-171d-4f9e-af0d-e63df40c2bc9") CPolicyConfigClient;
+
+/// デバイスの表示名。読めなければ空。
+std::wstring FriendlyName(IMMDevice* device) {
+    IPropertyStore* store = nullptr;
+    if (FAILED(device->OpenPropertyStore(STGM_READ, &store))) return L"";
+    std::wstring name;
+    PROPVARIANT value;
+    PropVariantInit(&value);
+    if (SUCCEEDED(store->GetValue(PKEY_Device_FriendlyName, &value)) &&
+        value.vt == VT_LPWSTR && value.pwszVal) {
+        name = value.pwszVal;
+    }
+    PropVariantClear(&value);
+    store->Release();
+    return name;
+}
+
+/// デバイスの識別子。読めなければ空。
+std::wstring DeviceId(IMMDevice* device) {
+    LPWSTR raw = nullptr;
+    if (FAILED(device->GetId(&raw)) || !raw) return L"";
+    std::wstring id = raw;
+    CoTaskMemFree(raw);
+    return id;
+}
+
+}  // namespace
+
+std::vector<AudioOutput> AudioOutputs() {
+    std::vector<AudioOutput> outputs;
+    IMMDeviceEnumerator* enumerator = nullptr;
+    if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                __uuidof(IMMDeviceEnumerator), (void**)&enumerator))) {
+        return outputs;
+    }
+
+    std::wstring current;
+    IMMDevice* preferred = nullptr;
+    if (SUCCEEDED(
+            enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &preferred))) {
+        current = DeviceId(preferred);
+        preferred->Release();
+    }
+
+    IMMDeviceCollection* all = nullptr;
+    if (SUCCEEDED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &all))) {
+        UINT count = 0;
+        all->GetCount(&count);
+        for (UINT i = 0; i < count; ++i) {
+            IMMDevice* device = nullptr;
+            if (FAILED(all->Item(i, &device))) continue;
+            AudioOutput output;
+            output.id = DeviceId(device);
+            output.name = FriendlyName(device);
+            device->Release();
+            if (output.id.empty()) continue;
+            if (output.name.empty()) output.name = L"(名前の無い出力先)";
+            output.current = !current.empty() && output.id == current;
+            outputs.push_back(std::move(output));
+        }
+        all->Release();
+    }
+    enumerator->Release();
+    return outputs;
+}
+
+bool SetDefaultAudioOutput(std::wstring const& id) {
+    if (id.empty()) return false;
+    IPolicyConfig* policy = nullptr;
+    if (FAILED(CoCreateInstance(__uuidof(CPolicyConfigClient), nullptr, CLSCTX_ALL,
+                                __uuidof(IPolicyConfig), (void**)&policy))) {
+        return false;
+    }
+    // 「既定のサウンド デバイス」は console と multimedia の 2 つ。
+    // eCommunications は触らない (通話用の選択を壊さないため)。
+    HRESULT const console = policy->SetDefaultEndpoint(id.c_str(), eConsole);
+    HRESULT const multimedia = policy->SetDefaultEndpoint(id.c_str(), eMultimedia);
+    policy->Release();
+    return SUCCEEDED(console) && SUCCEEDED(multimedia);
+}
+
 // ----------------------------------------------------------------- VolumeMeter
+
+/// 既定の出力先が変わったら印を立てるだけの係。
+///
+/// 呼び出しは MMDevice 側のスレッドから来るので、やることは 1 つの旗を
+/// 立てるだけに留める。旗は Read() が見て、掴み直しの合図にする。
+class VolumeMeter::Watcher : public IMMNotificationClient {
+public:
+    bool TakeStale() { return stale_.exchange(false); }
+
+    // --- IUnknown
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+    ULONG STDMETHODCALLTYPE Release() override {
+        ULONG const left = --refs_;
+        if (left == 0) delete this;
+        return left;
+    }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override {
+        if (!out) return E_POINTER;
+        if (iid == __uuidof(IUnknown) || iid == __uuidof(IMMNotificationClient)) {
+            *out = static_cast<IMMNotificationClient*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *out = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    // --- IMMNotificationClient
+    HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole role,
+                                                     LPCWSTR) override {
+        // 再生側の「既定」が動いたときだけ。通話用 (eCommunications) は見ない
+        if (flow == eRender && (role == eConsole || role == eMultimedia)) {
+            stale_ = true;
+        }
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR, DWORD) override {
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR) override { return S_OK; }
+    HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR, PROPERTYKEY) override {
+        return S_OK;
+    }
+
+private:
+    std::atomic<ULONG> refs_{1};
+    std::atomic<bool> stale_{false};
+};
 
 VolumeMeter::~VolumeMeter() { Forget(); }
 
 void VolumeMeter::Forget() {
-    if (!endpoint_) return;
-    endpoint_->Release();
-    endpoint_ = nullptr;
+    if (endpoint_) {
+        endpoint_->Release();
+        endpoint_ = nullptr;
+    }
+    if (enumerator_ && watcher_) {
+        enumerator_->UnregisterEndpointNotificationCallback(watcher_);
+    }
+    if (watcher_) {
+        watcher_->Release();
+        watcher_ = nullptr;
+    }
+    if (enumerator_) {
+        enumerator_->Release();
+        enumerator_ = nullptr;
+    }
 }
 
 bool VolumeMeter::Acquire() {
     if (endpoint_) return true;
-    IMMDeviceEnumerator* enumerator = nullptr;
-    if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
-                                __uuidof(IMMDeviceEnumerator),
-                                (void**)&enumerator))) {
+    if (!enumerator_) {
+        if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                    __uuidof(IMMDeviceEnumerator),
+                                    (void**)&enumerator_))) {
+            enumerator_ = nullptr;
+            return false;
+        }
+        // 出力先の切り替えに付いていくための知らせ。張れなくても音量は読める
+        // ので、失敗しても先へ進む。
+        watcher_ = new Watcher();
+        if (FAILED(enumerator_->RegisterEndpointNotificationCallback(watcher_))) {
+            watcher_->Release();
+            watcher_ = nullptr;
+        }
+    }
+
+    IMMDevice* device = nullptr;
+    if (FAILED(enumerator_->GetDefaultAudioEndpoint(eRender, eMultimedia, &device))) {
         return false;
     }
-    IMMDevice* device = nullptr;
-    HRESULT hr = enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &device);
-    enumerator->Release();
-    if (FAILED(hr)) return false;
-
     void* volume = nullptr;
-    hr = device->Activate(__uuidof(::IAudioEndpointVolume), CLSCTX_ALL, nullptr, &volume);
+    HRESULT const hr = device->Activate(__uuidof(::IAudioEndpointVolume), CLSCTX_ALL,
+                                        nullptr, &volume);
     device->Release();
     if (FAILED(hr)) return false;
     endpoint_ = (::IAudioEndpointVolume*)volume;
@@ -247,7 +433,13 @@ bool VolumeMeter::Acquire() {
 }
 
 std::optional<VolumeMeter::Reading> VolumeMeter::Read() {
-    // 1 回目が失敗したら、既定デバイスが差し替わったものとして掴み直す。
+    // 出力先が切り替わっていたら、掴み直してから読む。掴んだままだと古い
+    // デバイスの音量を返し続けてしまう。
+    if (watcher_ && watcher_->TakeStale() && endpoint_) {
+        endpoint_->Release();
+        endpoint_ = nullptr;
+    }
+    // 1 回目が失敗したら、デバイスが消えたものとして掴み直す。
     for (int attempt = 0; attempt < 2; ++attempt) {
         if (!Acquire()) return std::nullopt;
         float level = 0.0f;
@@ -259,7 +451,8 @@ std::optional<VolumeMeter::Reading> VolumeMeter::Read() {
             reading.muted = muted != FALSE;
             return reading;
         }
-        Forget();
+        endpoint_->Release();
+        endpoint_ = nullptr;
     }
     return std::nullopt;
 }

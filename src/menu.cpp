@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "common.h"
+#include "win32util.h"
 
 namespace menu {
 namespace {
@@ -20,6 +21,7 @@ enum : UINT {
     kIdArtBase = 300,
     kIdSessionAuto = 1000,
     kIdSessionBase = 1001,
+    kIdDeviceBase = 2000,
 };
 
 void AddItem(HMENU parent, UINT id, std::wstring const& label, bool checked = false,
@@ -67,6 +69,18 @@ Selection Show(HWND owner, int x, int y, Config const& config,
                 true);
     }
     AddSubmenu(root, sources, L"再生元");
+
+    // 出力先の問い合わせは重い (実測で既定を 1 つ引くだけで 1.9 ms)。メニューを
+    // 開いたこの瞬間にだけ聞く。
+    auto const devices = win32util::AudioOutputs();
+    if (!devices.empty()) {
+        HMENU outputs = CreatePopupMenu();
+        for (size_t i = 0; i < devices.size(); ++i) {
+            AddItem(outputs, (UINT)(kIdDeviceBase + i), devices[i].name,
+                    devices[i].current, true);
+        }
+        AddSubmenu(root, outputs, L"音声の出力先");
+    }
     AddSeparator(root);
 
     HMENU positions = CreatePopupMenu();
@@ -127,6 +141,9 @@ Selection Show(HWND owner, int x, int y, Config const& config,
                chosen < kIdSessionBase + state.sessions.size()) {
         selection.kind = Selection::Kind::Session;
         selection.session = state.sessions[chosen - kIdSessionBase].first;
+    } else if (chosen >= kIdDeviceBase && chosen < kIdDeviceBase + devices.size()) {
+        selection.kind = Selection::Kind::AudioOutput;
+        selection.device = devices[chosen - kIdDeviceBase].id;
     } else if (chosen >= kIdAnchorBase && chosen < kIdAnchorBase + std::size(kAnchors)) {
         selection.kind = Selection::Kind::Anchor;
         selection.anchor = kAnchors[chosen - kIdAnchorBase].value;

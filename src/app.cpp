@@ -29,6 +29,10 @@ constexpr UINT kSyncInterval = 250;
 constexpr UINT kScrollInterval = 40;
 // 起動が落ち着いてから常駐量を削るまで
 constexpr UINT kTrimDelay = 5'000;
+// 音声まわり (MMDevice と、その RPC の裏方) は遅れて温まる。1 回目の 5 秒では
+// まだ触られておらず、実測で 12 秒には作業セットが 8.7 MB まで膨らんでいた
+// (返させると 3.9 MB に戻る = 実体ではなく返し忘れ)。もう一度だけ短めに削る
+constexpr UINT kTrimSecondDelay = 30'000;
 // 以後の間引き
 constexpr UINT kTrimInterval = 600'000;
 
@@ -137,6 +141,17 @@ void App::SelectSession(std::optional<std::wstring> const& app_id) {
     controller_->SelectSession(app_id);
 }
 
+void App::SelectAudioOutput(std::wstring const& device_id) {
+    if (!win32util::SetDefaultAudioOutput(device_id)) {
+        errlog::Write(L"音声の出力先を切り替えられなかった");
+        return;
+    }
+    // 出力先ごとに音量は別。掴み直して、新しい方の値をすぐ出す。
+    // (知らせを待っても直るが、選んだ手応えは早い方がよい)
+    volume_.Forget();
+    SyncVolume();
+}
+
 void App::SyncVolume() {
     // 音量はどこからでも変わる (キーボード・ミキサー・他のアプリ)。通知を
     // 受ける口を増やさず、タスクバーへの追従と同じ周期で読み直す。実際に
@@ -168,6 +183,7 @@ void App::ShowContextMenu(int x, int y) {
         case Kind::Width: SetWidth(selection.size); break;
         case Kind::ArtSize: SetArtSize(selection.size); break;
         case Kind::Session: SelectSession(selection.session); break;
+        case Kind::AudioOutput: SelectAudioOutput(selection.device); break;
         case Kind::HideWhenIdle: ToggleHideWhenIdle(); break;
         case Kind::WheelVolume: ToggleWheelVolume(); break;
         case Kind::Quit: Quit(); break;
@@ -229,8 +245,11 @@ LRESULT App::Handle(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
                     return 0;
                 case kTimerTrim:
                     win32util::TrimWorkingSet();
-                    // 1 回目は起動から少しあとに、以後は長い間隔で
-                    SetTimer(hwnd, kTimerTrim, kTrimInterval, nullptr);
+                    // 1 回目は起動から少しあと、2 回目は音声まわりが温まった
+                    // ころ、以後は長い間隔で
+                    ++trims_;
+                    SetTimer(hwnd, kTimerTrim,
+                             trims_ == 1 ? kTrimSecondDelay : kTrimInterval, nullptr);
                     return 0;
                 default:
                     break;

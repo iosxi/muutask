@@ -4,13 +4,16 @@
 
 #include <functional>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "common.h"
 
-// <endpointvolume.h> の中身。音量を読むためだけに使うので、ヘッダーは
-// win32util.cpp の中だけに閉じ込める (ここは bar.h 経由で広く読まれる)。
+// <endpointvolume.h> / <mmdeviceapi.h> の中身。音量まわりでしか使わないので、
+// ヘッダーは win32util.cpp の中だけに閉じ込める (ここは bar.h 経由で広く
+// 読まれる)。
 struct IAudioEndpointVolume;
+struct IMMDeviceEnumerator;
 
 // タスクバーに重ねて表示するための Win32 まわりの薄いラッパー。
 namespace win32util {
@@ -88,6 +91,33 @@ void TrimWorkingSet();
 /// Windows 標準の音量表示 (OSD) もそのまま出るため。
 void VolumeStep(bool up);
 
+/// 音声の出力先 (再生デバイス)。
+struct AudioOutput {
+    std::wstring id;       // OS が付ける識別子。切り替えに渡すのはこれ
+    std::wstring name;     // 表示名 ("スピーカー (Realtek Audio)" など)
+    bool current = false;  // いまの既定かどうか
+};
+
+/// いま使える出力先の一覧。取れなければ空。
+///
+/// **メニューを開いたときだけ呼ぶこと。**この手の問い合わせは重く、既定の
+/// 出力先を 1 つ引くだけでも実測 1.9 ms かかる (音量の読み取り 59 µs の 32 倍)。
+std::vector<AudioOutput> AudioOutputs();
+
+/// 既定の出力先を切り替える。成功したら true。
+///
+/// 既定の出力先を変える**公開 API は無い**。Windows の設定画面が内部で使って
+/// いる `CPolicyConfigClient` (文書化されていない COM クラス) を叩く。Vista 以降
+/// ずっと在り、Windows 11 でも動くことを実測で確かめた — 2 台ある環境で
+/// 行き来させ、`GetDefaultAudioEndpoint` が付いてくることを見ている。
+/// 文書化されていない以上、将来の Windows で消える可能性はある。消えても
+/// 掴めずに false を返すだけで、他の機能は動き続ける。
+///
+/// 変えるのは eConsole と eMultimedia の 2 つで、**eCommunications は触りません**。
+/// Windows の「既定のサウンド デバイスにする」と同じ範囲で、通話用に別の
+/// デバイスを選んである環境を壊さないため。
+bool SetDefaultAudioOutput(std::wstring const& id);
+
 /// 既定の再生デバイスの音量を読む。
 ///
 /// 動かす方 (VolumeStep) はメディア キーに任せたままで、ここは読むだけ。
@@ -109,13 +139,24 @@ public:
 
     /// 読めなければ無し (音の出口が 1 つも無いときなど)。
     std::optional<Reading> Read();
-    /// 掴んでいるものを手放す。
+    /// 掴んでいるものを手放す。次の Read で掴み直す。
     void Forget();
 
 private:
+    /// 既定の出力先が変わったことを知らせてくる係 (IMMNotificationClient)。
+    ///
+    /// 掴んだインターフェイスは**古い出力先を指したまま**になり、黙っていると
+    /// 切り替えたあとも前のデバイスの音量を読み続けてしまう。毎回 id を
+    /// 引き直して確かめる手もあるが、実測 1.9 ms/回で 0.25 秒ごとに呼ぶと
+    /// 0.77% CPU — このアプリの常駐 CPU がほぼ倍になるので採らない。
+    /// 知らせを受けて印を立てるだけなら、ふだんの費用は 0。
+    class Watcher;
+
     bool Acquire();
 
+    IMMDeviceEnumerator* enumerator_ = nullptr;
     IAudioEndpointVolume* endpoint_ = nullptr;
+    Watcher* watcher_ = nullptr;
 };
 
 /// カーソルが特定の場所にあるときだけ、ホイールを横取りする。

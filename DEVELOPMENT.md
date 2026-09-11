@@ -21,7 +21,7 @@ C++20 と素の Win32 です。メディア セッションは C++/WinRT で直�
 | [src/image.cpp](src/image.cpp) | 画素の計算 (Lanczos・ガウス・アンシャープ・角丸) |
 | [src/artwork.cpp](src/artwork.cpp) | アルバム アート・音符・数字アイコンの組み立て |
 | [src/theme.cpp](src/theme.cpp) | テーマ・アクセント カラー・DPI |
-| [src/win32util.cpp](src/win32util.cpp) | タスクバーの位置取得・最前面維持・ホイール フック・音量の読み取り |
+| [src/win32util.cpp](src/win32util.cpp) | タスクバーの位置取得・最前面維持・ホイール フック・音量の読み取り・出力先の切り替え |
 | [src/config.cpp](src/config.cpp) | 設定の保存 (小さな JSON の読み書きを含む) |
 | [src/errlog.cpp](src/errlog.cpp) | 想定外の失敗だけを書き残すログ |
 | [src/icontool.cpp](src/icontool.cpp) | `muutask.ico` を書き出す道具 (ふだんのビルドには入らない) |
@@ -298,6 +298,61 @@ UIAccess 権限 (署名 + 信頼された場所へのインストール) が無�
 
 バーの中の小さなアートは**正方形の枠しか無い**ので、こちらは帯を落としたあとに
 中央を切り出しています (トレイ アイコンはアルバム アートを使わないので対象外)。
+
+### 音声の出力先を切り替える
+
+右クリック メニューの「音声の出力先」は、Windows の**既定のサウンド デバイス**を
+入れ替えています ([src/win32util.cpp](src/win32util.cpp) の `AudioOutputs` と
+`SetDefaultAudioOutput`)。
+
+- **一覧**は `IMMDeviceEnumerator::EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE)`
+  で、名前は `PKEY_Device_FriendlyName` から読みます。**メニューを開いた
+  その瞬間にだけ**呼びます — この手の問い合わせは重く、既定を 1 つ引く
+  `GetDefaultAudioEndpoint` + `GetId` だけで**実測 1.9 ms** かかります
+  (音量の読み取り 59 µs の 32 倍)。
+- **切り替えには公開 API がありません。** Windows の設定画面が内部で使っている
+  `CPolicyConfigClient` (CLSID `870af99c-…`) の `IPolicyConfig::SetDefaultEndpoint`
+  を叩きます。**文書化されていない**ので、vtable の並びを合わせるために前に
+  並ぶメソッドも同じ形で宣言してあります (中身は使わないため引数の型は void*)。
+  Windows 11 で動くことは実測で確かめました — 出力先が 2 つある環境で行き来
+  させ、`GetDefaultAudioEndpoint` が付いてくることを見ています。消えても
+  `CoCreateInstance` が失敗して false を返すだけで、他は動き続けます。
+- 変えるのは **eConsole と eMultimedia の 2 つだけ**です。Windows の
+  「既定のサウンド デバイスにする」と同じ範囲で、**eCommunications は触りません** —
+  通話用に別のデバイスを選んである環境を壊さないためです (実測でも、切り替えの
+  前後で communications の既定は動きませんでした)。
+- `functiondiscoverykeys_devpkey.h` は **`mmdeviceapi.h` より後に置くこと。**
+  `DEFINE_PROPERTYKEY` が定義済みである前提で書かれていて、単独で読むと
+  「型指定子がありません」で止まります (実測)。
+
+### 出力先が変わったら音量を掴み直す
+
+`IAudioEndpointVolume` は**特定のデバイスを指したまま**なので、既定が入れ替わっても
+古いデバイスの音量を返し続けます。これに追いつく方法を 2 つ測って選びました。
+
+| 方法 | 費用 | 採否 |
+| --- | --- | --- |
+| 毎回 `GetDefaultAudioEndpoint` で id を引いて比べる | 1.9 ms/回 → 0.25 秒ごとで **0.77% CPU** | 不採用。常駐 CPU (1.7%) がほぼ倍になる |
+| `IMMNotificationClient` で知らせを受ける | ふだん 0。**+1 スレッド・+11 ハンドル**、作業セットは測定差なし | 採用 |
+
+知らせは MMDevice 側のスレッドから来るので、コールバックの中では
+`std::atomic<bool>` の旗を立てるだけにしてあります。旗は `Read()` が見て、
+掴み直しの合図にします。メニューから切り替えたときは知らせを待たず、
+`App::SelectAudioOutput` が明示的に `Forget()` してから読み直します
+(選んだ手応えを早くするため)。
+
+実測: 出力先を 2 台の間で行き来させると、`VolumeMeter::Read()` の返す値が
+0%/ミュート (Realtek) ↔ 18%/ミュート無し (LG) と付いてきました。
+
+### 常駐量を削る回数を 2 回に増やした
+
+音声まわり (MMDevice と、その裏の RPC) は**遅れて温まります**。起動 5 秒の
+1 回目の返却ではまだ触られておらず、実測で 12 秒には作業セットが 8.7 MB まで
+膨らんでいました。外から返させると 3.9 MB に戻るので、実体ではなく**返し忘れ**です
+(private の実測は 3.7 MB で、出力先の機能を入れる前の 3.4 MB とほぼ同じ)。
+
+そこで 2 回目を 30 秒に置きました ([src/app.cpp](src/app.cpp) の `kTrimSecondDelay`)。
+実測で、返却直後の作業セットは **1.75 MB** に戻ります。
 
 ### トレイのアイコンは音量の数字
 

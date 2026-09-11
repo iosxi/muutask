@@ -50,6 +50,7 @@ struct Selection {
         Width,
         ArtSize,
         Session,
+        AudioOutput,
         HideWhenIdle,
         WheelVolume,
         Quit,
@@ -59,6 +60,7 @@ struct Selection {
     std::wstring anchor;                      // Kind::Anchor
     int size = 0;                             // Kind::Width / Kind::ArtSize
     std::optional<std::wstring> session;      // Kind::Session (無指定 = 自動)
+    std::wstring device;                      // Kind::AudioOutput (デバイスの id)
 };
 
 /// メニューを出して、選ばれた項目を返す。
