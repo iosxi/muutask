@@ -43,6 +43,8 @@ public:
     void SetArtSize(int height);
     void ToggleHideWhenIdle();
     void ToggleWheelVolume();
+    /// ミュートを入り切りする。
+    void ToggleMute();
     void SelectSession(std::optional<std::wstring> const& app_id);
     /// 音声の出力先 (既定の再生デバイス) を切り替える。
     void SelectAudioOutput(std::wstring const& device_id);

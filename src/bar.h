@@ -90,8 +90,11 @@ private:
     void Hide(wchar_t const* reason = nullptr);
     void KeepInFront(int cx, int cy);
     std::optional<std::pair<int, int>> Placement(RECT const& taskbar) const;
+    /// 画面座標がバーの上か (覆われていないか含めて)。
+    bool OnBar(int x, int y) const;
     bool WheelTarget(int x, int y) const;
     bool OnWheel(int x, int y, int delta);
+    bool OnMiddleClick(int x, int y);
     void ArmPopup();
     void CancelPopup();
     void OpenPopup();

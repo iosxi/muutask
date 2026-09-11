@@ -107,7 +107,8 @@ Selection Show(HWND owner, int x, int y, Config const& config,
     AddSubmenu(root, art_sizes, L"アルバム アートの大きさ");
 
     AddItem(root, kIdHideWhenIdle, L"再生中のときだけ表示", config.bar_hide_when_idle);
-    AddItem(root, kIdWheelVolume, L"ホイールで音量を調整", config.bar_wheel_volume);
+    AddItem(root, kIdWheelVolume, L"ホイールで音量・押し込みでミュート",
+            config.bar_wheel_volume);
     AddSeparator(root);
     AddItem(root, kIdQuit, L"終了");
 

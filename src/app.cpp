@@ -135,6 +135,12 @@ void App::ToggleWheelVolume() {
     bar_.ApplyWheelVolume();
 }
 
+void App::ToggleMute() {
+    win32util::VolumeToggleMute();
+    // 実際に切り替わるのはキーが届いてからなので、ここでは読み直さない。
+    // 0.25 秒ごとの読み直しがアイコンに反映する。
+}
+
 void App::SelectSession(std::optional<std::wstring> const& app_id) {
     config_.session = app_id;
     config_.Save();

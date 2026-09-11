@@ -218,6 +218,11 @@ void Tray::OnMessage(WPARAM wparam, LPARAM lparam) {
             // 既定の操作は再生 / 一時停止 (Python 版の default=True と同じ)
             app_->TogglePlayPause();
             break;
+        case WM_MBUTTONUP:
+            // ホイールの押し込みでミュートを入り切り。アイコンが音量の数字
+            // なので、そこを押して黙らせられるのが素直。
+            app_->ToggleMute();
+            break;
         case WM_RBUTTONUP:
         case WM_CONTEXTMENU: {
             POINT cursor{};

@@ -127,16 +127,39 @@ bool IsCovered(HWND hwnd, int x, int y) {
     return (root ? root : top) != hwnd;
 }
 
-bool PointOnTaskbar(int x, int y) {
+namespace {
+
+std::wstring ClassOf(HWND hwnd) {
+    wchar_t name[64] = {};
+    GetClassNameW(hwnd, name, (int)std::size(name));
+    return name;
+}
+
+}  // namespace
+
+TaskbarSpot TaskbarHit(int x, int y) {
     POINT point{x, y};
     HWND top = WindowFromPoint(point);
-    if (!top) return false;
+    if (!top) return TaskbarSpot::None;
     HWND root = GetAncestor(top, GA_ROOT);
     if (!root) root = top;
-    wchar_t cls[64] = {};
-    GetClassNameW(root, cls, (int)std::size(cls));
-    return wcscmp(cls, L"Shell_TrayWnd") == 0 ||
-           wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0;
+    std::wstring const root_class = ClassOf(root);
+    if (root_class != L"Shell_TrayWnd" && root_class != L"Shell_SecondaryTrayWnd") {
+        return TaskbarSpot::None;
+    }
+
+    // 当たったところから root まで親をたどり、途中の入れ物で部分を見分ける。
+    // 時計や個々のトレイ アイコンのように、もっと深いものが返ることがある。
+    for (HWND node = top; node && node != root; node = GetParent(node)) {
+        std::wstring const name = ClassOf(node);
+        if (name == L"TrayNotifyWnd") return TaskbarSpot::Tray;
+        // Windows 11 は MSTaskSwWClass が直に返る。10 はその中の
+        // MSTaskListWClass が返ることがある
+        if (name == L"MSTaskSwWClass" || name == L"MSTaskListWClass") {
+            return TaskbarSpot::AppButtons;
+        }
+    }
+    return TaskbarSpot::Blank;
 }
 
 void RaiseToTop(HWND hwnd) {
@@ -213,6 +236,11 @@ void TrimWorkingSet() {
     // がそのまま常駐し続けるので、立ち上がったところで一度返す。捨てるのは
     // 物理メモリ上の常駐分だけで、必要になれば読み直されるため動作に影響は無い。
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+}
+
+void VolumeToggleMute() {
+    keybd_event(VK_VOLUME_MUTE, 0, 0, 0);
+    keybd_event(VK_VOLUME_MUTE, 0, KEYEVENTF_KEYUP, 0);
 }
 
 void VolumeStep(bool up) {
@@ -461,9 +489,11 @@ std::optional<VolumeMeter::Reading> VolumeMeter::Read() {
 
 WheelHook::~WheelHook() { Uninstall(); }
 
-bool WheelHook::Install(Handler handler) {
+bool WheelHook::Install(Handler wheel, ClickHandler middle_click) {
     if (hook_) return true;
-    handler_ = std::move(handler);
+    wheel_ = std::move(wheel);
+    middle_click_ = std::move(middle_click);
+    eat_middle_up_ = false;
     g_wheel_hook = this;
     hook_ = SetWindowsHookExW(WH_MOUSE_LL, &WheelHook::Thunk, GetModuleHandleW(nullptr),
                               0);
@@ -479,13 +509,25 @@ void WheelHook::Uninstall() {
 }
 
 LRESULT CALLBACK WheelHook::Thunk(int code, WPARAM wparam, LPARAM lparam) {
-    if (code == HC_ACTION && wparam == WM_MOUSEWHEEL && g_wheel_hook &&
-        g_wheel_hook->handler_) {
+    WheelHook* self = g_wheel_hook;
+    if (code == HC_ACTION && self) {
         auto const* info = (MSLLHOOKSTRUCT const*)lparam;
-        // 回した量は mouseData の上位 16 ビットに符号付きで入っている
-        int delta = (short)HIWORD(info->mouseData);
-        if (g_wheel_hook->handler_(info->pt.x, info->pt.y, delta)) {
-            return 1;  // 下のウィンドウには渡さない
+        if (wparam == WM_MOUSEWHEEL && self->wheel_) {
+            // 回した量は mouseData の上位 16 ビットに符号付きで入っている
+            int const delta = (short)HIWORD(info->mouseData);
+            if (self->wheel_(info->pt.x, info->pt.y, delta)) {
+                return 1;  // 下のウィンドウには渡さない
+            }
+        } else if (wparam == WM_MBUTTONDOWN && self->middle_click_) {
+            if (self->middle_click_(info->pt.x, info->pt.y)) {
+                // 対になる離した方も捨てる。押した方だけ消すと、下の
+                // ウィンドウに「押していないのに離れた」が届く
+                self->eat_middle_up_ = true;
+                return 1;
+            }
+        } else if (wparam == WM_MBUTTONUP && self->eat_middle_up_) {
+            self->eat_middle_up_ = false;
+            return 1;
         }
     }
     return CallNextHookEx(nullptr, code, wparam, lparam);

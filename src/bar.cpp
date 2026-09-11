@@ -619,13 +619,23 @@ void Bar::ApplyWheelVolume() {
     bool const want = app_ && app_->config().bar_wheel_volume;
     if (want && !wheel_hook_) {
         auto hook = std::make_unique<win32util::WheelHook>();
-        if (hook->Install([this](int x, int y, int delta) { return OnWheel(x, y, delta); })) {
-            wheel_hook_ = std::move(hook);
-        }
+        bool const installed = hook->Install(
+            [this](int x, int y, int delta) { return OnWheel(x, y, delta); },
+            [this](int x, int y) { return OnMiddleClick(x, y); });
+        if (installed) wheel_hook_ = std::move(hook);
     } else if (!want && wheel_hook_) {
         wheel_hook_.reset();
     }
     wheel_accum_ = 0;
+}
+
+bool Bar::OnBar(int x, int y) const {
+    // バーはタスクバーの子ではなく、上に重ねた別ウィンドウなので別に見る。
+    if (!visible_ || !geometry_) return false;
+    RECT const& g = *geometry_;
+    if (!(x >= g.left && x < g.right && y >= g.top && y < g.bottom)) return false;
+    // 何かに覆われているなら、そのウィンドウの取り分
+    return !win32util::IsCovered(hwnd_, x, y);
 }
 
 bool Bar::WheelTarget(int x, int y) const {
@@ -633,17 +643,25 @@ bool Bar::WheelTarget(int x, int y) const {
     // ゲームや全画面の動画で、視界の外の操作に音量が動くのを避ける。
     if (win32util::ForegroundIsFullscreen()) return false;
 
-    // 通知領域もアプリ ボタン列も含めた、タスクバーの全体。矩形ではなく
-    // 「その座標に見えているのがタスクバーか」で見ているので、スタート
+    // 回す方は、通知領域もアプリ ボタン列も含めたタスクバーの全体。矩形では
+    // なく「その座標に見えているのがタスクバーか」で見ているので、スタート
     // メニューや各種フライアウトが開いていれば自動的にそちらの取り分になる。
     if (win32util::PointOnTaskbar(x, y)) return true;
+    return OnBar(x, y);
+}
 
-    // バーはタスクバーの子ではなく、上に重ねた別ウィンドウなので別に見る。
-    if (!visible_ || !geometry_) return false;
-    RECT const& g = *geometry_;
-    if (!(x >= g.left && x < g.right && y >= g.top && y < g.bottom)) return false;
-    // 何かに覆われているなら、そのウィンドウの取り分
-    return !win32util::IsCovered(hwnd_, x, y);
+bool Bar::OnMiddleClick(int x, int y) {
+    // 押し込みでミュートを入り切りする。受け取る範囲は回す方とまったく同じで、
+    // 通知領域もアプリのボタン列も含めたタスクバー全体。
+    //
+    // 中クリックはタスクバーの上で既に意味を持っている (アプリのボタンでは
+    // 「そのアプリをもう 1 つ開く」、通知領域では各アプリへ届く) が、
+    // **わざと潰している** — 本人の指示で、TrayVolume の代わりに「タスクバーの
+    // どこでも同じように押せる」方を採った。邪魔なときはメニューの
+    // 「ホイールで音量・押し込みでミュート」で回す方ごと切れる。
+    if (!WheelTarget(x, y)) return false;
+    win32util::VolumeToggleMute();
+    return true;
 }
 
 bool Bar::OnWheel(int x, int y, int delta) {

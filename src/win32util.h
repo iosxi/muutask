@@ -32,20 +32,33 @@ void MakeToolWindow(HWND hwnd);
 /// 指定座標で、そのウィンドウが他のウィンドウに覆われているか。
 bool IsCovered(HWND hwnd, int x, int y);
 
-/// その座標に見えているのがタスクバーか (副モニターのものも含む)。
+/// タスクバーのどこを指しているか。
+enum class TaskbarSpot {
+    None,        // タスクバーではない
+    Blank,       // 地の部分。スタート ボタンや検索も含む
+    AppButtons,  // アプリのボタン列
+    Tray,        // 通知領域 (アイコン・時計)
+};
+
+/// その座標に見えているタスクバーの「どこ」か (副モニターのものも含む)。
 ///
 /// 矩形では見ない。カーソルの下のウィンドウを引いて、その root が
 /// タスクバーかどうかで判じる。こうすると重なりの判定が一緒に片付く —
 /// スタート メニュー・ウィジェット・通知領域のオーバーフロー・タスクの
 /// サムネイルはどれもタスクバーの子ではない別ウィンドウなので、自動的に
-/// 「タスクバーではない」側に落ちる。自動的に隠れる設定で引っ込んでいる
-/// ときも同じ。
+/// None に落ちる。自動的に隠れる設定で引っ込んでいるときも同じ。
 ///
-/// 実測 (Windows 11、3072px 幅のタスクバー): スタート付近・アプリ ボタン列
-/// (MSTaskSwWClass)・空きスペース・通知領域 (TrayNotifyWnd) のどこを指しても
-/// root は Shell_TrayWnd で返る。副モニターのタスクバーだけ
-/// Shell_SecondaryTrayWnd になる。
-bool PointOnTaskbar(int x, int y);
+/// 部分の見分けは、当たったウィンドウから root まで親をたどって、途中に
+/// 決まった名前の入れ物が居るかで決める。実測 (Windows 11、3072px 幅):
+/// スタート付近と空きスペースは Shell_TrayWnd がそのまま返り、アプリの
+/// ボタン列は MSTaskSwWClass、通知領域は TrayNotifyWnd が返る。root は
+/// どこでも Shell_TrayWnd (副モニターだけ Shell_SecondaryTrayWnd)。
+TaskbarSpot TaskbarHit(int x, int y);
+
+/// その座標がタスクバーの上か (どの部分でもよい)。
+inline bool PointOnTaskbar(int x, int y) {
+    return TaskbarHit(x, y) != TaskbarSpot::None;
+}
 
 /// 最前面グループの先頭へ入れ直す。
 ///
@@ -83,6 +96,12 @@ std::optional<Rgb> SampleColor(int x, int y, int width, int height);
 
 /// 使っていないページを OS に返して常駐量を削る。
 void TrimWorkingSet();
+
+/// ミュートを入り切りする。
+///
+/// VolumeStep と同じくメディア キー (VK_VOLUME_MUTE) を送るだけ。既定の
+/// 出力先の選び直しを OS に任せられ、Windows 標準の音量表示も出る。
+void VolumeToggleMute();
 
 /// システムの音量を 1 段 (2%) 動かす。
 ///
@@ -171,15 +190,21 @@ private:
 /// 行わない (時間がかかると Windows にフックを外される)。
 class WheelHook {
 public:
-    /// handler(x, y, delta) が true を返すと、下のウィンドウへ流さない。
+    /// wheel(x, y, delta) が true を返すと、下のウィンドウへ流さない。
     using Handler = std::function<bool(int, int, int)>;
+    /// ホイールの押し込み (中ボタン)。true で下へ流さない。
+    ///
+    /// 押し込みは**押した方 (WM_MBUTTONDOWN) だけ**を渡す。横取りしたときは
+    /// 対になる離した方 (WM_MBUTTONUP) もこちらで握り潰す — 押した方だけ
+    /// 消すと、下のウィンドウに「押していないのに離れた」が届いてしまう。
+    using ClickHandler = std::function<bool(int, int)>;
 
     ~WheelHook();
 
     /// フックを張る。張れなければ false (呼び出し元はあきらめる)。
     /// 低レベル フックは張ったスレッドのメッセージ ループで呼ばれるので、
     /// メイン ループを回しているスレッドから呼ぶこと。
-    bool Install(Handler handler);
+    bool Install(Handler wheel, ClickHandler middle_click);
     void Uninstall();
     bool installed() const { return hook_ != nullptr; }
 
@@ -187,7 +212,10 @@ private:
     static LRESULT CALLBACK Thunk(int code, WPARAM wparam, LPARAM lparam);
 
     HHOOK hook_ = nullptr;
-    Handler handler_;
+    Handler wheel_;
+    ClickHandler middle_click_;
+    //: 押した方を横取りしたので、離した方も捨てる
+    bool eat_middle_up_ = false;
 };
 
 }  // namespace win32util
