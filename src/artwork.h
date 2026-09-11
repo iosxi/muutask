@@ -31,8 +31,12 @@ image::Bgra NoteIcon(int size, Rgb fg, std::optional<Rgb> bg, int radius);
 /// 通知領域では 16x16 まで縮められる。3 桁を読めるようにするため、下地は
 /// 敷かず (bg を渡さなければ透ける)、字は枠いっぱいまで引き伸ばす。桁数が
 /// 変わっても大きさが揃うよう、幅と高さの両方で収まる方に合わせる。
+///
+/// cross を立てると、数字の下に小さな ✕ を添える (ミュートの印)。その分だけ
+/// 数字は上に寄り、少し小さくなる。✕ はフォントの字ではなく 2 本の帯として
+/// 描く — 5px 角では字形が潰れて、何の印か分からなくなるため。
 image::Bgra NumberIcon(int size, std::wstring const& text, Rgb fg,
-                       std::optional<Rgb> bg, int radius);
+                       std::optional<Rgb> bg, int radius, bool cross);
 
 /// 絵柄の指紋。大きさが違っても、同じ絵なら近い値になる。
 std::optional<image::Rgb888> Fingerprint(std::vector<uint8_t> const& data);

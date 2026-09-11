@@ -29,6 +29,15 @@ constexpr double kChromaBlurHigh = 1.2;
 constexpr double kNumberFillWidth = 0.96;
 constexpr double kNumberFillHeight = 0.82;
 
+// ✕ を添えるときの数字。下に場所を空けるぶん低くし、上へ寄せる。
+// (高さの割合と、字面の中心を置く高さ。どちらも一辺に対する比)
+constexpr double kNumberFillHeightCrossed = 0.62;
+constexpr double kNumberCenterCrossed = 0.30;
+// ✕ の中心の高さ・腕の長さ (中心から端まで)・線の太さ。同じく一辺に対する比
+constexpr double kCrossCenterY = 0.845;
+constexpr double kCrossArm = 0.15;
+constexpr double kCrossWidth = 0.115;
+
 /// 数字用のフォント。細いと 16x16 で潰れるので少し太らせる。
 ///
 /// 等幅の数字 (lfPitchAndFamily に FIXED_PITCH) は指定しない。Segoe UI の
@@ -87,7 +96,7 @@ image::Bgra NoteIcon(int size, Rgb fg, std::optional<Rgb> bg, int radius) {
 }
 
 image::Bgra NumberIcon(int size, std::wstring const& text, Rgb fg,
-                       std::optional<Rgb> bg, int radius) {
+                       std::optional<Rgb> bg, int radius, bool cross) {
     image::Bgra out;
     out.width = size;
     out.height = size;
@@ -99,10 +108,14 @@ image::Bgra NumberIcon(int size, std::wstring const& text, Rgb fg,
     }
     if (text.empty()) return out;
 
-    auto digits = image::RasterizeSupersampled(size, size, [&text, size](HDC dc, int ss) {
+    auto digits = image::RasterizeSupersampled(size, size, [&text, size,
+                                                            cross](HDC dc, int ss) {
         int const box = size * ss;
         double const room_w = box * kNumberFillWidth;
-        double const room_h = box * kNumberFillHeight;
+        double const room_h = box * (cross ? kNumberFillHeightCrossed
+                                           : kNumberFillHeight);
+        // 字面の中心を置く高さ。✕ が入るときは上へ寄せる
+        double const center_y = box * (cross ? kNumberCenterCrossed : 0.5);
 
         // 試しの大きさで一度測り、収まる倍率を出してから作り直す。数字には
         // 下に飛び出す部分が無いので、字面の高さは tmAscent から
@@ -141,11 +154,35 @@ image::Bgra NumberIcon(int size, std::wstring const& text, Rgb fg,
         // 字面の真ん中を枠の真ん中に合わせる。TextOut が受けるのは字面の上では
         // なく行の上なので、上の余白ぶんだけ持ち上げる。
         int const x = RoundToInt((box - extent.cx) / 2.0);
-        int const y = RoundToInt((box - ink) / 2.0) -
-                      (metrics.tmAscent - ink);
+        int const y = RoundToInt(center_y - ink / 2.0) - (metrics.tmAscent - ink);
         TextOutW(dc, x, y, text.c_str(), (int)text.size());
         SelectObject(dc, old_font);
         DeleteObject(font);
+
+        if (!cross) return;
+        // ✕ は 2 本の帯として置く。呼び出し元が白いブラシと NULL_PEN を
+        // 選んでくれているので、Polygon で塗るだけでよい。
+        double const cx = box / 2.0;
+        double const cy = box * kCrossCenterY;
+        double const arm = box * kCrossArm;
+        double const half = box * kCrossWidth / 2.0;
+        auto stroke = [&](double x0, double y0, double x1, double y1) {
+            double const dx = x1 - x0, dy = y1 - y0;
+            double const len = std::sqrt(dx * dx + dy * dy);
+            if (len <= 0.0) return;
+            // 線に直交する向きへ太さの半分だけ振った四角形
+            double const nx = -dy / len * half;
+            double const ny = dx / len * half;
+            POINT quad[4] = {
+                {RoundToInt(x0 + nx), RoundToInt(y0 + ny)},
+                {RoundToInt(x1 + nx), RoundToInt(y1 + ny)},
+                {RoundToInt(x1 - nx), RoundToInt(y1 - ny)},
+                {RoundToInt(x0 - nx), RoundToInt(y0 - ny)},
+            };
+            Polygon(dc, quad, 4);
+        };
+        stroke(cx - arm, cy - arm, cx + arm, cy + arm);
+        stroke(cx + arm, cy - arm, cx - arm, cy + arm);
     });
 
     image::Bgra glyph = image::Premultiply(fg, digits, size, size);

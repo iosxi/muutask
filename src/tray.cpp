@@ -17,8 +17,6 @@ constexpr UINT kIconId = 1;
 // 下地を敷かずに数字を置くときの色。タスクバーの明暗に背ける。
 constexpr Rgb kOnDark{0xf5, 0xf5, 0xf7};
 constexpr Rgb kOnLight{0x16, 0x16, 0x1a};
-// ミュート中。明るい地でも暗い地でも「沈んでいる」と分かる中間の灰色
-constexpr Rgb kMutedInk{0x8a, 0x8a, 0x92};
 
 /// 通知領域がアイコンを出す一辺 (px)。96 DPI で 16、150% で 24。
 int SmallIconSize() {
@@ -78,13 +76,15 @@ HICON Tray::MakeIcon() const {
     // 音量が読めないとき (音の出口が 1 つも無いときなど) は音符に戻す。
     image::Bgra art;
     if (volume_) {
-        Rgb const ink = volume_->muted ? kMutedInk
-                                       : (system_dark_ ? kOnDark : kOnLight);
+        Rgb const ink = system_dark_ ? kOnDark : kOnLight;
         // 通知領域が出す大きさで直に描く。音符と同じ 64 で描いてシェルに縮めて
         // もらうと、数字の輪郭が甘くなる (実測。42 と 100 ではっきり差が出た)。
         // 形の滑らかな音符と違い、細い画で出来ている字は縮小に弱い。
+        //
+        // ミュート中は数字の下に ✕ を添える。色を落とす形にはしない —
+        // 灰色は「暗いテーマで少し沈んだ数字」との区別が付きにくい。
         art = artwork::NumberIcon(SmallIconSize(), std::to_wstring(volume_->percent),
-                                  ink, std::nullopt, 0);
+                                  ink, std::nullopt, 0, volume_->muted);
     } else {
         art = artwork::NoteIcon(kIconSize, palette_.accent, palette_.card, 10);
     }
