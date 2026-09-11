@@ -62,6 +62,8 @@ bool App::Initialize(HINSTANCE instance) {
 
     if (!bar_.Create(this, instance)) return false;
     if (!popup_.Create(this, instance)) return false;
+    // アイコンを出す前に音量を読む。最初から数字で出る (音符が一瞬見えない)
+    SyncVolume();
     tray_.Create(this, hidden_);
 
     controller_ = std::make_unique<media::MediaController>(
@@ -135,10 +137,19 @@ void App::SelectSession(std::optional<std::wstring> const& app_id) {
     controller_->SelectSession(app_id);
 }
 
+void App::SyncVolume() {
+    // 音量はどこからでも変わる (キーボード・ミキサー・他のアプリ)。通知を
+    // 受ける口を増やさず、タスクバーへの追従と同じ周期で読み直す。実際に
+    // 値が変わったときだけアイコンを描き直すので、普段は読むだけで終わる。
+    tray_.SetVolume(volume_.Read());
+}
+
 void App::Quit() {
     bar_.Close();
     popup_.Close();
     tray_.Close();
+    // COM を落とす前に手放す
+    volume_.Forget();
     if (controller_) controller_->Stop();
     PostQuitMessage(0);
 }
@@ -211,6 +222,7 @@ LRESULT App::Handle(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
                     return 0;
                 case kTimerSync:
                     bar_.Sync();
+                    SyncVolume();
                     return 0;
                 case kTimerScroll:
                     bar_.ScrollTick();

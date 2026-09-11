@@ -8,6 +8,10 @@
 
 #include "common.h"
 
+// <endpointvolume.h> の中身。音量を読むためだけに使うので、ヘッダーは
+// win32util.cpp の中だけに閉じ込める (ここは bar.h 経由で広く読まれる)。
+struct IAudioEndpointVolume;
+
 // タスクバーに重ねて表示するための Win32 まわりの薄いラッパー。
 namespace win32util {
 
@@ -24,6 +28,21 @@ void MakeToolWindow(HWND hwnd);
 
 /// 指定座標で、そのウィンドウが他のウィンドウに覆われているか。
 bool IsCovered(HWND hwnd, int x, int y);
+
+/// その座標に見えているのがタスクバーか (副モニターのものも含む)。
+///
+/// 矩形では見ない。カーソルの下のウィンドウを引いて、その root が
+/// タスクバーかどうかで判じる。こうすると重なりの判定が一緒に片付く —
+/// スタート メニュー・ウィジェット・通知領域のオーバーフロー・タスクの
+/// サムネイルはどれもタスクバーの子ではない別ウィンドウなので、自動的に
+/// 「タスクバーではない」側に落ちる。自動的に隠れる設定で引っ込んでいる
+/// ときも同じ。
+///
+/// 実測 (Windows 11、3072px 幅のタスクバー): スタート付近・アプリ ボタン列
+/// (MSTaskSwWClass)・空きスペース・通知領域 (TrayNotifyWnd) のどこを指しても
+/// root は Shell_TrayWnd で返る。副モニターのタスクバーだけ
+/// Shell_SecondaryTrayWnd になる。
+bool PointOnTaskbar(int x, int y);
 
 /// 最前面グループの先頭へ入れ直す。
 ///
@@ -68,6 +87,36 @@ void TrimWorkingSet();
 /// 再生デバイスの選び直しや複数デバイスの扱いを OS に任せられるうえ、
 /// Windows 標準の音量表示 (OSD) もそのまま出るため。
 void VolumeStep(bool up);
+
+/// 既定の再生デバイスの音量を読む。
+///
+/// 動かす方 (VolumeStep) はメディア キーに任せたままで、ここは読むだけ。
+/// トレイのアイコンに数字を出すのに要る。
+///
+/// 既定デバイスが差し替わると掴んでいるインターフェイスは古くなり、以後
+/// 失敗し続ける。読めなかったら一度手放して掴み直す。
+///
+/// COM を使うので、CoInitializeEx を済ませたスレッドから呼ぶこと
+/// (このアプリでは main の STA = メイン ループのスレッド)。
+class VolumeMeter {
+public:
+    struct Reading {
+        int percent = 0;      // 0..100
+        bool muted = false;   // ミュート中
+    };
+
+    ~VolumeMeter();
+
+    /// 読めなければ無し (音の出口が 1 つも無いときなど)。
+    std::optional<Reading> Read();
+    /// 掴んでいるものを手放す。
+    void Forget();
+
+private:
+    bool Acquire();
+
+    IAudioEndpointVolume* endpoint_ = nullptr;
+};
 
 /// カーソルが特定の場所にあるときだけ、ホイールを横取りする。
 ///

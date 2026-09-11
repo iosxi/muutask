@@ -90,6 +90,7 @@ private:
     void Hide(wchar_t const* reason = nullptr);
     void KeepInFront(int cx, int cy);
     std::optional<std::pair<int, int>> Placement(RECT const& taskbar) const;
+    bool WheelTarget(int x, int y) const;
     bool OnWheel(int x, int y, int delta);
     void ArmPopup();
     void CancelPopup();

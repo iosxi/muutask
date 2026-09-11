@@ -21,6 +21,13 @@ struct Palette {
 };
 
 bool IsDarkMode();
+
+/// タスクバーとスタート メニューが暗いか。
+///
+/// アプリ側 (AppsUseLightTheme) とは別の設定で、片方だけ明るくできる。
+/// 通知領域に下地なしで字を置くときは、背けるのはこちらの方。
+bool IsSystemDarkMode();
+
 Rgb AccentColor();
 
 /// 高 DPI でぼやけないようにする。ウィンドウ作成前に呼ぶこと。

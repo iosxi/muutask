@@ -1,5 +1,9 @@
 #include "win32util.h"
 
+#include <endpointvolume.h>
+#include <mmdeviceapi.h>
+
+#include <iterator>
 #include <map>
 
 namespace win32util {
@@ -117,6 +121,18 @@ bool IsCovered(HWND hwnd, int x, int y) {
     return (root ? root : top) != hwnd;
 }
 
+bool PointOnTaskbar(int x, int y) {
+    POINT point{x, y};
+    HWND top = WindowFromPoint(point);
+    if (!top) return false;
+    HWND root = GetAncestor(top, GA_ROOT);
+    if (!root) root = top;
+    wchar_t cls[64] = {};
+    GetClassNameW(root, cls, (int)std::size(cls));
+    return wcscmp(cls, L"Shell_TrayWnd") == 0 ||
+           wcscmp(cls, L"Shell_SecondaryTrayWnd") == 0;
+}
+
 void RaiseToTop(HWND hwnd) {
     UINT const flags = SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE;
     if (!(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST)) {
@@ -197,6 +213,55 @@ void VolumeStep(bool up) {
     BYTE const vk = up ? VK_VOLUME_UP : VK_VOLUME_DOWN;
     keybd_event(vk, 0, 0, 0);
     keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
+}
+
+// ----------------------------------------------------------------- VolumeMeter
+
+VolumeMeter::~VolumeMeter() { Forget(); }
+
+void VolumeMeter::Forget() {
+    if (!endpoint_) return;
+    endpoint_->Release();
+    endpoint_ = nullptr;
+}
+
+bool VolumeMeter::Acquire() {
+    if (endpoint_) return true;
+    IMMDeviceEnumerator* enumerator = nullptr;
+    if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                __uuidof(IMMDeviceEnumerator),
+                                (void**)&enumerator))) {
+        return false;
+    }
+    IMMDevice* device = nullptr;
+    HRESULT hr = enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &device);
+    enumerator->Release();
+    if (FAILED(hr)) return false;
+
+    void* volume = nullptr;
+    hr = device->Activate(__uuidof(::IAudioEndpointVolume), CLSCTX_ALL, nullptr, &volume);
+    device->Release();
+    if (FAILED(hr)) return false;
+    endpoint_ = (::IAudioEndpointVolume*)volume;
+    return true;
+}
+
+std::optional<VolumeMeter::Reading> VolumeMeter::Read() {
+    // 1 回目が失敗したら、既定デバイスが差し替わったものとして掴み直す。
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        if (!Acquire()) return std::nullopt;
+        float level = 0.0f;
+        BOOL muted = FALSE;
+        if (SUCCEEDED(endpoint_->GetMasterVolumeLevelScalar(&level)) &&
+            SUCCEEDED(endpoint_->GetMute(&muted))) {
+            Reading reading;
+            reading.percent = Clamp(RoundToInt(level * 100.0), 0, 100);
+            reading.muted = muted != FALSE;
+            return reading;
+        }
+        Forget();
+    }
+    return std::nullopt;
 }
 
 // ------------------------------------------------------------------ WheelHook

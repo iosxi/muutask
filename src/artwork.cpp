@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace artwork {
@@ -22,6 +23,24 @@ constexpr int kSharpenThreshold = 2;
 constexpr double kChromaBlurRatio = 0.3;
 constexpr double kChromaBlurLow = 0.5;
 constexpr double kChromaBlurHigh = 1.2;
+
+// 数字アイコンで、枠のうち字に使う割合 (幅・高さ)。通知領域では 16x16 まで
+// 縮められるので、余白はぎりぎりまで削る。
+constexpr double kNumberFillWidth = 0.96;
+constexpr double kNumberFillHeight = 0.82;
+
+/// 数字用のフォント。細いと 16x16 で潰れるので少し太らせる。
+///
+/// 等幅の数字 (lfPitchAndFamily に FIXED_PITCH) は指定しない。Segoe UI の
+/// プロポーショナル数字の方が 1 の幅が詰まり、3 桁でも横に収まるため。
+HFONT MakeDigitFont(int pixels) {
+    return CreateFontW(-pixels, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                       DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
+                       // 4 倍で描いてから縮めるので、GDI 側の平滑化は要らない。
+                       // ClearType のままだと色の付いた縁が被覆率に混ざる。
+                       NONANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+                       L"Segoe UI");
+}
 
 /// 長辺が box に収まる大きさ。縦横の比はそのまま。
 SIZE Fit(int width, int height, int box) {
@@ -63,6 +82,73 @@ image::Bgra NoteIcon(int size, Rgb fg, std::optional<Rgb> bg, int radius) {
     });
 
     image::Bgra glyph = image::Premultiply(fg, note, size, size);
+    image::CompositeOver(out, glyph);
+    return out;
+}
+
+image::Bgra NumberIcon(int size, std::wstring const& text, Rgb fg,
+                       std::optional<Rgb> bg, int radius) {
+    image::Bgra out;
+    out.width = size;
+    out.height = size;
+    out.pixels.assign((size_t)size * size * 4, 0);
+
+    if (bg) {
+        image::Mask const base = image::RoundedRectMask(size, size, radius);
+        out = image::Premultiply(*bg, base, size, size);
+    }
+    if (text.empty()) return out;
+
+    auto digits = image::RasterizeSupersampled(size, size, [&text, size](HDC dc, int ss) {
+        int const box = size * ss;
+        double const room_w = box * kNumberFillWidth;
+        double const room_h = box * kNumberFillHeight;
+
+        // 試しの大きさで一度測り、収まる倍率を出してから作り直す。数字には
+        // 下に飛び出す部分が無いので、字面の高さは tmAscent から
+        // tmInternalLeading (字の上の余白) を引いたものとして見る。
+        auto measure = [&](HFONT font, SIZE* extent, TEXTMETRICW* metrics) {
+            HGDIOBJ old = SelectObject(dc, font);
+            GetTextExtentPoint32W(dc, text.c_str(), (int)text.size(), extent);
+            GetTextMetricsW(dc, metrics);
+            SelectObject(dc, old);
+        };
+
+        int const probe_px = box / 2;
+        HFONT probe = MakeDigitFont(probe_px);
+        if (!probe) return;
+        SIZE probe_size{};
+        TEXTMETRICW probe_metrics{};
+        measure(probe, &probe_size, &probe_metrics);
+        DeleteObject(probe);
+
+        int const probe_ink = probe_metrics.tmAscent - probe_metrics.tmInternalLeading;
+        if (probe_size.cx <= 0 || probe_ink <= 0) return;
+        double const factor = (std::min)(room_w / probe_size.cx, room_h / probe_ink);
+        int const px = (std::max)(1, RoundToInt(probe_px * factor));
+
+        HFONT font = MakeDigitFont(px);
+        if (!font) return;
+        SIZE extent{};
+        TEXTMETRICW metrics{};
+        measure(font, &extent, &metrics);
+        int const ink = metrics.tmAscent - metrics.tmInternalLeading;
+
+        HGDIOBJ old_font = SelectObject(dc, font);
+        SetBkMode(dc, TRANSPARENT);
+        // 下地は黒。被覆率は白で塗られた分として読まれる
+        SetTextColor(dc, RGB(255, 255, 255));
+        // 字面の真ん中を枠の真ん中に合わせる。TextOut が受けるのは字面の上では
+        // なく行の上なので、上の余白ぶんだけ持ち上げる。
+        int const x = RoundToInt((box - extent.cx) / 2.0);
+        int const y = RoundToInt((box - ink) / 2.0) -
+                      (metrics.tmAscent - ink);
+        TextOutW(dc, x, y, text.c_str(), (int)text.size());
+        SelectObject(dc, old_font);
+        DeleteObject(font);
+    });
+
+    image::Bgra glyph = image::Premultiply(fg, digits, size, size);
     image::CompositeOver(out, glyph);
     return out;
 }

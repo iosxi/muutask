@@ -16,7 +16,10 @@ struct Config {
     int bar_width = 340;                   // 96 DPI 基準の px
     int bar_gap = 8;                       // 通知領域との間隔
     std::optional<std::wstring> bar_bg;    // "#rrggbb" 固定したいとき
-    bool bar_wheel_volume = true;          // バーの上でホイールを回して音量を上下
+    //: タスクバーの上でホイールを回して音量を上下する (バーの上に限らない)。
+    //: 設定の名前は v17 からのものをそのまま使う (書き出した config.json と
+    //: 食い違わせないため)
+    bool bar_wheel_volume = true;
     int popup_height = 180;                // ホバーで出る小窓の長辺 (96 DPI 基準)
 
     /// 設定を読む。読めなければ既定値。v1 以前の %APPDATA% から引き継ぐ。

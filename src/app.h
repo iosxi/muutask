@@ -11,6 +11,7 @@
 #include "media.h"
 #include "popup.h"
 #include "tray.h"
+#include "win32util.h"
 
 /// 起動と各部品の接続、スレッド間の受け渡し。
 class App {
@@ -55,6 +56,8 @@ private:
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
     LRESULT Handle(HWND, UINT, WPARAM, LPARAM);
     void OnStatePosted();
+    /// システムの音量を読み直し、変わっていればトレイのアイコンに映す。
+    void SyncVolume();
 
     HINSTANCE instance_ = nullptr;
     HWND hidden_ = nullptr;
@@ -68,4 +71,7 @@ private:
     Bar bar_;
     Popup popup_;
     Tray tray_;
+    //: トレイに出す数字の出どころ。COM を使うので、STA のこのスレッドから
+    //: だけ触ること
+    win32util::VolumeMeter volume_;
 };

@@ -628,16 +628,30 @@ void Bar::ApplyWheelVolume() {
     wheel_accum_ = 0;
 }
 
-bool Bar::OnWheel(int x, int y, int delta) {
-    // バーの上で回されたホイールを音量に回す。true で下へ流さない。
+bool Bar::WheelTarget(int x, int y) const {
+    // 全画面のアプリでタスクバーが引っ込んでいる間は、何も横取りしない。
+    // ゲームや全画面の動画で、視界の外の操作に音量が動くのを避ける。
+    if (win32util::ForegroundIsFullscreen()) return false;
+
+    // 通知領域もアプリ ボタン列も含めた、タスクバーの全体。矩形ではなく
+    // 「その座標に見えているのがタスクバーか」で見ているので、スタート
+    // メニューや各種フライアウトが開いていれば自動的にそちらの取り分になる。
+    if (win32util::PointOnTaskbar(x, y)) return true;
+
+    // バーはタスクバーの子ではなく、上に重ねた別ウィンドウなので別に見る。
     if (!visible_ || !geometry_) return false;
     RECT const& g = *geometry_;
-    if (!(x >= g.left && x < g.right && y >= g.top && y < g.bottom)) {
+    if (!(x >= g.left && x < g.right && y >= g.top && y < g.bottom)) return false;
+    // 何かに覆われているなら、そのウィンドウの取り分
+    return !win32util::IsCovered(hwnd_, x, y);
+}
+
+bool Bar::OnWheel(int x, int y, int delta) {
+    // タスクバーの上で回されたホイールを音量に回す。true で下へ流さない。
+    if (!WheelTarget(x, y)) {
         wheel_accum_ = 0;
         return false;
     }
-    // 何かに覆われているなら、そのウィンドウの取り分。横取りしない
-    if (win32util::IsCovered(hwnd_, x, y)) return false;
 
     wheel_accum_ += delta;
     while (std::abs(wheel_accum_) >= kWheelDelta) {

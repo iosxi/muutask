@@ -26,6 +26,13 @@ bool IsDarkMode() {
     return value == 0;
 }
 
+bool IsSystemDarkMode() {
+    DWORD value = 0;
+    // 同じキーの別の値。読めない環境ではダークとして扱う (IsDarkMode と同じ)
+    if (!ReadDword(kPersonalizeKey, L"SystemUsesLightTheme", &value)) return true;
+    return value == 0;
+}
+
 Rgb AccentColor() {
     DWORD value = 0;
     if (!ReadDword(kDwmKey, L"AccentColor", &value)) return kDefaultAccent;
